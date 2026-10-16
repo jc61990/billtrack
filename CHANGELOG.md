@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.5.4 - 2026-10-16
+### Changed
+- Calendar chips and Week rows for money going out (bills, spending) now use the **color of the account they come
+  out of**, with a colored edge stripe; items with no account are grey. Money in stays green.
+- Overdue bills keep their account color with a red outline and "!"; paid bills are faded and struck through.
+- Legend under the calendar (each account, No account, Money in). Hovering a chip shows the account name.
+
 ## 2.5.3 - 2026-10-16
 ### Fixed
 - `setup.sh`: nginx 1.25.1+ warned that `listen ... http2` is deprecated. The installer now checks the nginx

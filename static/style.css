@@ -267,3 +267,16 @@ dialog h3 { margin: 0 0 1rem; font-size: 1.1rem; }
 .chip.rem { background: color-mix(in srgb, var(--focus) 16%, var(--sheet)); color: var(--ink); }
 .item.rem .rem-ic { text-align: center; }
 .item.rem .name { font-style: italic; }
+
+/* ---------- account colors on calendar / week ---------- */
+.chip.out.acct { background: color-mix(in srgb, var(--acct) 32%, var(--sheet)); color: var(--ink); box-shadow: inset 3px 0 0 var(--acct); }
+.chip.out.noacct { background: color-mix(in srgb, var(--ink-2) 18%, var(--sheet)); color: var(--ink); box-shadow: inset 3px 0 0 var(--ink-2); }
+.chip.out.over { outline: 2px solid var(--out); outline-offset: -2px; font-weight: 650; }
+.chip.out.paid { opacity: 0.5; text-decoration: line-through; }
+.item.acct { box-shadow: inset 3px 0 0 var(--acct); padding-left: 6px; }
+.item.noacct { box-shadow: inset 3px 0 0 var(--ink-2); padding-left: 6px; }
+.acct-legend { display: flex; flex-wrap: wrap; gap: 0.3rem 1rem; font-size: 0.8rem; color: var(--ink-2); margin: -0.4rem 0 1rem; }
+.acct-legend span { display: inline-flex; align-items: center; gap: 0.35rem; }
+.acct-legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.acct-legend i.none { background: var(--ink-2); }
+.acct-legend i.inc { background: var(--in); }

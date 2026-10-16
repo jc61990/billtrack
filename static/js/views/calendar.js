@@ -1,4 +1,4 @@
-import { addDays, api, can, el, fmtDay, iso, money, moneyShort, onContext, parseIso, S, DOW , fill } from "../core.js";
+import { addDays, api, can, el, fmtDay, iso, money, moneyShort, onContext, parseIso, S, DOW, fill, safeColor } from "../core.js";
 import { collect, isIn, isRem, itemChip, itemRow, reminderItems } from "../items.js";
 import { dayMenu } from "./week.js";
 
@@ -37,6 +37,9 @@ export async function render(root) {
       el("button", { type: "button", "aria-label": "Next month", onclick: () => shift(1, root) }, "›")),
     el("p", { class: "hint" }, can("finance:write") ? "Drag a bill, payday, entry or ⏰ reminder to another day to reschedule it. Right-click (long-press on phone) for more." : ""),
     el("div", { class: "cal" }, cells),
+    el("div", { class: "acct-legend" }, S.accounts.map((a) =>
+      el("span", {}, el("i", { style: `background:${safeColor(a.color)}` }), a.name)),
+      el("span", {}, el("i", { class: "none" }), "No account"), el("span", {}, el("i", { class: "inc" }), "Money in")),
     sel ? el("div", { class: "card" }, el("h2", {}, fmtDay(S.calSel, { weekday: "long", month: "long", day: "numeric" })),
       el("div", { class: "days flat", dataset: { dropDate: S.calSel } }, sel.length ? sel.map(itemRow) : el("div", { class: "empty" }, "Nothing on this day"))) : null);
 }

@@ -1,5 +1,5 @@
 // Ledger items (bill / pay / extra / expense): rows, chips, context menus, drag-to-reschedule. Shared by Week + Calendar.
-import { api, can, draggable, el, KIND_LABEL, money, moneyShort, onContext, refresh, safeColor, showMenu, toast } from "./core.js";
+import { api, can, draggable, el, KIND_LABEL, money, moneyShort, onContext, refresh, S, safeColor, showMenu, toast } from "./core.js";
 import { billForm, expenseForm, extraForm, moveForm, paidForm, receivedForm, reminderForm, sourceForm } from "./forms.js";
 
 const W = () => can("finance:write");
@@ -89,6 +89,12 @@ export function menuFor(item) {
   ];
 }
 
+/** Account color for money going out; null = no account (rendered grey). */
+export function acctColorOf(item) {
+  const a = item.account_id ? S.accounts.find((x) => x.id === item.account_id) : null;
+  return a ? safeColor(a.color) : null;
+}
+
 export const itemName = (it) => isRem(it) ? `⏰ ${it.title}` : it.type === "extra" ? (KIND_LABEL[it.kind] || it.kind) + (it.hours ? ` ${it.hours}h` : "") : it.name;
 const isIn = (it) => it.type === "pay" || it.type === "extra";
 
@@ -129,7 +135,9 @@ export function itemRow(item) {
   const meta = item.type === "bill" ? [el("span", { class: "dot", style: `background:${safeColor(item.account_color)}` }), item.account || "No account"]
     : item.type === "pay" ? [(item.received ? "Received" : "Expected") + (item.account ? ` → ${item.account}` : "")]
       : [[item.source, item.account, item.category, item.note].filter(Boolean).join(" · ")];
-  const row = el("div", { class: `item${item.status === "paid" || item.received ? " done" : ""}${item.skipped ? " skipped" : ""}`, tabindex: 0 },
+  const rc = isIn(item) ? null : acctColorOf(item);
+  const row = el("div", { class: `item${item.status === "paid" || item.received ? " done" : ""}${item.skipped ? " skipped" : ""}${isIn(item) ? "" : rc ? " acct" : " noacct"}`,
+    tabindex: 0, style: rc ? `--acct:${rc}` : null },
     check,
     el("div", { class: "body" }, el("span", { class: "name" }, itemName(item)),
       tagMap[item.status] ? el("span", { class: `tag ${item.status}` }, tagMap[item.status]) : null,
@@ -153,11 +161,15 @@ export function itemChip(item) {
     attach(chip, item);
     return chip;
   }
-  const cls = isIn(item) ? "in" : item.status === "overdue" ? "over" : item.status === "paid" ? "paid" : "out";
+  // Money in stays green. Money out takes the color of the account it comes out of (grey if none).
+  const color = isIn(item) ? null : acctColorOf(item);
+  const cls = isIn(item) ? "in" : `out ${color ? "acct" : "noacct"}${item.status === "overdue" ? " over" : ""}${item.status === "paid" ? " paid" : ""}`;
+  const acct = isIn(item) ? "" : ` · ${item.account || S.accounts.find((x) => x.id === item.account_id)?.name || "no account"}`;
   const chip = el("button", { type: "button", class: `chip ${cls}${item.skipped ? " skipped" : ""}`,
-    title: `${itemName(item)} ${money(item.amount_cents)}${item.moved ? ` (moved from ${item.orig_date})` : ""}`,
+    style: color ? `--acct:${color}` : null,
+    title: `${itemName(item)} ${money(item.amount_cents)}${acct}${item.status === "overdue" ? " · OVERDUE" : ""}${item.moved ? ` (moved from ${item.orig_date})` : ""}`,
     onclick: (e) => { const r = e.currentTarget.getBoundingClientRect(); showMenu(r.left, r.bottom, menuFor(item)); } },
-  el("span", { class: "cn" }, itemName(item)), el("span", { class: "ca" }, moneyShort(item.amount_cents)));
+  el("span", { class: "cn" }, item.status === "overdue" ? "! " : "", itemName(item)), el("span", { class: "ca" }, moneyShort(item.amount_cents)));
   attach(chip, item);
   return chip;
 }
