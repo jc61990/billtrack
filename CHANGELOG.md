@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.5.3 - 2026-10-16
+### Fixed
+- `setup.sh`: nginx 1.25.1+ warned that `listen ... http2` is deprecated. The installer now checks the nginx
+  version and writes `http2 on;` for 1.25.1 and newer, or the `listen ... ssl http2` form for older versions
+  (Ubuntu 24.04 ships 1.24). HTTP/2 stays enabled either way.
+
 ## 2.5.2 - 2026-10-16
 ### Fixed
 - Bills not appearing on the calendar. The bill form's **"Last payment (optional)"** field was easy to read as

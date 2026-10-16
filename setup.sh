@@ -292,9 +292,16 @@ if [[ $PROXY == 1 ]]; then
   install -m 644 "$TLS_DIR/ca.crt" /var/www/billtrack/billtrack-ca.crt
 
   echo "==> nginx (443 -> 127.0.0.1:$PORT)"
+  # HTTP/2 syntax changed in nginx 1.25.1: "listen ... http2" (older) vs a separate "http2 on;" (newer)
+  NGV=$(nginx -v 2>&1 | sed -n 's#.*nginx/\([0-9.]*\).*#\1#p')
+  if [[ -n "$NGV" && "$(printf '%s\n%s\n' 1.25.1 "$NGV" | sort -V | head -1)" == "1.25.1" ]]; then
+    H2_LISTEN=""; H2_ON="http2 on;"
+  else
+    H2_LISTEN=" http2"; H2_ON="# http2 enabled on the listen lines (nginx ${NGV:-unknown})"
+  fi
   # Only listen on IPv6 if the kernel has it (nginx refuses to start otherwise)
   if [[ -s /proc/net/if_inet6 ]]; then
-    L6_80="listen [::]:80 default_server;"; L6_443="listen [::]:443 ssl http2 default_server;"
+    L6_80="listen [::]:80 default_server;"; L6_443="listen [::]:443 ssl${H2_LISTEN} default_server;"
   else
     L6_80="# IPv6 not available on this host"; L6_443="$L6_80"
   fi
@@ -315,8 +322,9 @@ server {
 }
 
 server {
-    listen 443 ssl http2 default_server;
+    listen 443 ssl${H2_LISTEN} default_server;
     $L6_443
+    $H2_ON
     server_name _;
     server_tokens off;
 

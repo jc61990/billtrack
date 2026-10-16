@@ -4,7 +4,7 @@ Self-hosted bill, paycheck, savings and investment tracker built around the **we
 roles, two-factor sign-in, alerts by email and phone push, and encryption at every layer: the database on disk,
 secrets inside it, and every byte of browser traffic.
 
-![version](https://img.shields.io/badge/version-2.5.2-blue)
+![version](https://img.shields.io/badge/version-2.5.3-blue)
 
 ## Features
 
