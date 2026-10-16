@@ -1,4 +1,4 @@
-import { api, can, el, emptyState, fmtDay, money, onContext, REC_LABEL, acctName, toast, refresh , fill } from "../core.js";
+import { api, can, el, emptyState, fmtDay, money, onContext, REC_LABEL, acctName, toast, refresh, fill, S } from "../core.js";
 import { billForm } from "../forms.js";
 
 export const title = "Bills";
@@ -12,7 +12,8 @@ export async function render(root) {
     const li = el("li", {}, el("button", { type: "button", class: "row", onclick: () => billForm(b) },
       el("span", {}, el("span", {}, b.active ? b.name : `${b.name} (paused)`), el("div", { class: "meta" },
         [REC_LABEL[b.recurrence], `from ${fmtDay(b.start_date, { month: "short", day: "numeric", year: "numeric" })}`,
-          acctName(b.account_id), b.category, b.autopay ? "autopay" : ""].filter(Boolean).join(" · "))),
+          acctName(b.account_id), b.category, b.autopay ? "autopay" : "",
+          b.end_date ? `${b.end_date < S.me.today ? "ENDED" : "stops after"} ${fmtDay(b.end_date, { month: "short", day: "numeric", year: "numeric" })}` : ""].filter(Boolean).join(" · "))),
       el("span", { class: "amt" }, money(b.amount_cents))));
     onContext(li, () => [
       { label: w ? "Edit…" : "View…", action: () => billForm(b) },

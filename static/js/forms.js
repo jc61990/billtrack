@@ -16,7 +16,8 @@ export function billForm(b = {}, presetDate) {
     { name: "recurrence", label: "Repeats", type: "select", options: recOpts(), value: b.recurrence || "monthly", pair: 1 },
     { name: "remind_days", label: "Remind days before", type: "number", min: 0, max: 30, value: b.remind_days ?? 3, pair: 1 },
     { name: "category", label: "Category", value: b.category, placeholder: "Utilities", max: 60, pair: 1 },
-    { name: "end_date", label: "Last payment (optional)", type: "date", value: b.end_date, nullable: 1 },
+    { name: "end_date", label: "Stop after this date (optional)", type: "date", value: b.end_date, nullable: 1,
+      hint: "Only for bills that end, like a loan's final payment. Leave blank for bills that keep going." },
     { name: "autopay", label: "Autopay (no overdue alerts)", type: "check", value: b.autopay },
     { name: "active", label: "Active", type: "check", value: b.id ? b.active : true },
     { name: "notes", label: "Notes", type: "textarea", value: b.notes },
@@ -32,7 +33,8 @@ export function sourceForm(s = {}) {
     { name: "recurrence", label: "Paid", type: "select", options: recOpts(), value: s.recurrence || "weekly", pair: 1 },
     { name: "hourly_rate_cents", label: "Hourly rate (for OT)", type: "money", value: s.hourly_rate_cents ?? 0, zero: 1, pair: 1 },
     { name: "ot_multiplier", label: "OT multiplier", type: "number", step: "0.05", min: 1, max: 4, value: s.ot_multiplier ?? 1.5, pair: 1 },
-    { name: "end_date", label: "Ends (optional)", type: "date", value: s.end_date, nullable: 1 },
+    { name: "end_date", label: "Stop after this date (optional)", type: "date", value: s.end_date, nullable: 1,
+      hint: "Leave blank unless this pay is ending." },
     { name: "active", label: "Active", type: "check", value: s.id ? s.active : true },
   ], save("/api/income-sources", s.id), del("/api/income-sources", s.id));
 }

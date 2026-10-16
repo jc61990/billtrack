@@ -161,6 +161,11 @@ def migrate(con) -> None:
     # v1 -> v2: per-user alert tables replace the old global ones
     con.execute("DROP TABLE IF EXISTS notices")
     con.execute("DROP TABLE IF EXISTS digests")
+    # 2.5.2: "Last payment" was misread as "date I last paid". A recurring item whose end is on/before its start
+    # can never occur more than once, so that value was a mistake: clear it so the item repeats as intended.
+    for t in ("bills", "income_sources"):
+        con.execute(f"UPDATE {t} SET end_date=NULL WHERE end_date IS NOT NULL AND end_date <= start_date "
+                    "AND recurrence <> 'once'")
     # Make sure an admin exists (the original v1 user becomes admin)
     if not con.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
         con.execute("UPDATE users SET role='admin' WHERE id=(SELECT min(id) FROM users)")

@@ -369,3 +369,21 @@ def test_reminders_on_calendar(admin):
     mkuser("v9", "viewer")
     assert all(o["title"] not in ("Dentist",) for o in login("v9").get(
         f"/api/reminders/occurrences?start={t.replace(day=1)}&end={t.replace(day=28)}").json())  # own reminders only
+
+
+def test_end_date_mistake_fixed(admin):
+    t = ledger.today()
+    # API now refuses an end date before the first due date
+    r = admin.post("/api/bills", json={"name": "Bad", "amount_cents": 1, "start_date": "2026-10-23",
+                                       "end_date": "2026-09-23"}, headers=H)
+    assert r.status_code == 422 and "Stop after" in r.text
+    # rows saved by older versions get repaired by the migration
+    with db.tx() as con:
+        con.execute("INSERT INTO bills(name,amount_cents,start_date,recurrence,end_date) VALUES "
+                    "('OldA',100,'2026-10-23','monthly','2026-09-23'),('OldB',100,'2026-10-01','monthly','2026-10-01'),"
+                    "('Once',100,'2026-10-01','once','2026-10-01'),('Loan',100,'2026-10-01','monthly','2027-03-01')")
+        db.migrate(con)
+        got = {r["name"]: r["end_date"] for r in con.execute("SELECT name,end_date FROM bills WHERE name IN ('OldA','OldB','Once','Loan')")}
+    assert got == {"OldA": None, "OldB": None, "Once": "2026-10-01", "Loan": "2027-03-01"}
+    s = admin.get("/api/summary?start=2026-11-01&end=2026-11-30").json()
+    assert {"OldA", "OldB"} <= {b["name"] for b in s["bills"]}

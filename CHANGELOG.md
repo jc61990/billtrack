@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.5.2 - 2026-10-16
+### Fixed
+- Bills not appearing on the calendar. The bill form's **"Last payment (optional)"** field was easy to read as
+  "date I last paid", but it meant "stop repeating after this date", so a past date there silently ended the bill.
+  - Renamed to **"Stop after this date (optional)"** with an explanation (also on Pay).
+  - The API rejects a stop date earlier than the first due date.
+  - Migration clears stop dates on/before the first due date for repeating bills and pay (those could only ever
+    occur once, so the value was always a mistake). One-time items and genuine future end dates are untouched.
+  - Bills list shows "stops after <date>" / "ENDED <date>" so an end date is never invisible again.
+
 ## 2.5.1 - 2026-10-16
 ### Fixed
 - Reminders didn't appear on the Calendar or Week view (including ones added by right-clicking a day). Your

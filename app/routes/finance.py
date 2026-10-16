@@ -3,7 +3,7 @@ from datetime import date, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from .. import db, ledger, notify
 from ..security import Principal, audit, iso, now_utc, require
@@ -43,6 +43,16 @@ class BillIn(In):
     notes: Note = ""
     active: bool = True
 
+    @model_validator(mode="after")
+    def _ends(self):
+        return _end_after_start(self)
+
+
+def _end_after_start(m):
+    if m.end_date and m.end_date < m.start_date:
+        raise ValueError("'Stop after' date is before the first due date. Leave it blank for bills that keep going.")
+    return m
+
 
 class SourceIn(In):
     name: Name
@@ -54,6 +64,10 @@ class SourceIn(In):
     hourly_rate_cents: Cents = 0
     ot_multiplier: Annotated[float, Field(ge=1, le=4)] = 1.5
     active: bool = True
+
+    @model_validator(mode="after")
+    def _ends(self):
+        return _end_after_start(self)
 
 
 class ExtraIn(In):
