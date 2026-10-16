@@ -1,7 +1,7 @@
 """The signed-in user's own profile, security, API tokens, alerts inbox and reminders."""
 import json
 import secrets
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -269,6 +269,23 @@ def _check_dt(s):
         datetime.fromisoformat(s)
     except ValueError:
         raise HTTPException(422, "Invalid date/time") from None
+
+
+@r.get("/reminders/occurrences")
+def reminder_occurrences(start: date, end: date, p: Principal = Depends(require("reminders"))):
+    """Your active reminders expanded onto dates, for the calendar and week views."""
+    if end < start or (end - start).days > 400:
+        raise HTTPException(422, "Range must be 0-400 days")
+    from ..recurrence import occurrences
+    out = []
+    with tx() as con:
+        for r_ in rows(con, "SELECT * FROM reminders WHERE user_id=? AND active=1", (p.user_id,)):
+            first = datetime.fromisoformat(r_["next_at"])
+            for d in occurrences(first.date(), r_["recurrence"], start, end):
+                out.append({"type": "reminder", "id": r_["id"], "title": r_["title"], "note": r_["note"],
+                            "date": d.isoformat(), "time": r_["next_at"][11:16], "recurrence": r_["recurrence"],
+                            "is_next": d == first.date(), "amount_cents": 0})
+    return sorted(out, key=lambda x: (x["date"], x["time"]))
 
 
 @r.get("/reminders")

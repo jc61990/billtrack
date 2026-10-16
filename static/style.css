@@ -262,3 +262,8 @@ dialog h3 { margin: 0 0 1rem; font-size: 1.1rem; }
 .stack-legend i { width: 10px; height: 10px; border-radius: 2px; }
 .a0 { background: var(--in); } .a1 { background: color-mix(in srgb, var(--in) 60%, var(--focus)); } .a2 { background: color-mix(in srgb, var(--in) 45%, var(--sheet)); }
 .l0 { background: var(--out); } .l1 { background: color-mix(in srgb, var(--out) 60%, var(--warn)); } .l2 { background: color-mix(in srgb, var(--out) 45%, var(--sheet)); }
+
+/* reminders on calendar / week */
+.chip.rem { background: color-mix(in srgb, var(--focus) 16%, var(--sheet)); color: var(--ink); }
+.item.rem .rem-ic { text-align: center; }
+.item.rem .name { font-style: italic; }

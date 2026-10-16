@@ -1,6 +1,6 @@
 import { $, addDays, api, barChart, can, el, fmtDay, kpis, money, onContext, S , fill } from "../core.js";
 import { expenseForm, extraForm, billForm, reminderForm } from "../forms.js";
-import { collect, isIn, itemRow } from "../items.js";
+import { collect, isIn, isRem, itemRow, reminderItems } from "../items.js";
 
 export const title = "This week";
 
@@ -16,13 +16,14 @@ export function dayMenu(d) {
 
 export async function render(root) {
   const [w, trend] = await Promise.all([api("GET", `/api/week?day=${S.day}`), api("GET", "/api/trend?back=8&ahead=4")]);
-  const items = collect(w);
+  const items = [...collect(w), ...(await reminderItems(w.start, w.end))];
   const days = [];
   let run = 0;
   for (let i = 0; i < 7; i++) {
     const d = addDays(w.start, i);
-    const todays = items.filter((x) => x.date === d).sort((a, b) => Number(isIn(b)) - Number(isIn(a)));
-    todays.forEach((x) => { run += (isIn(x) ? 1 : -1) * x.amount_cents; });
+    const order = (x) => isRem(x) ? 0 : isIn(x) ? 1 : 2;
+    const todays = items.filter((x) => x.date === d).sort((a, b) => order(a) - order(b));
+    todays.forEach((x) => { if (!isRem(x)) run += (isIn(x) ? 1 : -1) * x.amount_cents; });
     const li = el("li", { class: "day" + (d === S.me.today ? " today" : ""), dataset: { dropDate: d } },
       el("div", { class: "day-h" }, el("span", {}, fmtDay(d)),
         el("span", { class: "run" + (run < 0 ? " out" : "") }, `Running ${money(run)}`)),

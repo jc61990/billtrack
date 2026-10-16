@@ -356,3 +356,16 @@ def test_net_worth(admin):
     admin.put(f"/api/admin/users/{uid}", json={"role": "member", "perms_deny": ["investments:read"]}, headers=H)
     m = login("m3")
     assert m.get("/api/networth").json()["net_cents"] == nw["net_cents"] - 500000
+
+
+def test_reminders_on_calendar(admin):
+    t = ledger.today()
+    d23 = t.replace(day=23)
+    admin.post("/api/reminders", json={"title": "Dentist", "next_at": f"{d23}T15:30"}, headers=H)
+    admin.post("/api/reminders", json={"title": "Weekly check", "next_at": f"{t}T08:00", "recurrence": "weekly"}, headers=H)
+    occ = admin.get(f"/api/reminders/occurrences?start={t.replace(day=1)}&end={t.replace(day=28)}").json()
+    assert any(o["title"] == "Dentist" and o["date"] == d23.isoformat() and o["time"] == "15:30" for o in occ)
+    assert sum(o["title"] == "Weekly check" for o in occ) >= 2
+    mkuser("v9", "viewer")
+    assert all(o["title"] not in ("Dentist",) for o in login("v9").get(
+        f"/api/reminders/occurrences?start={t.replace(day=1)}&end={t.replace(day=28)}").json())  # own reminders only

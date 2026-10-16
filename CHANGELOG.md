@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.5.1 - 2026-10-16
+### Fixed
+- Reminders didn't appear on the Calendar or Week view (including ones added by right-clicking a day). Your
+  active reminders now show as ⏰ chips/rows on their dates (repeating ones on every date), can be dragged to
+  another day, and have Edit / Move / Delete in the right-click menu. They never count toward money totals.
+### Added
+- `GET /api/reminders/occurrences?start=&end=` (your own reminders only).
+
 ## 2.5.0 - 2026-10-16
 ### Added
 - **Net worth** section: current net worth with 30-day / 90-day / 1-year / since-start change, history chart

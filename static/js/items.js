@@ -5,7 +5,25 @@ import { billForm, expenseForm, extraForm, moveForm, paidForm, receivedForm, rem
 const W = () => can("finance:write");
 const run = (p, msg) => p.then(() => { if (msg) toast(msg); refresh(); }).catch((e) => toast(e.message, true));
 
+const isRem = (it) => it.type === "reminder";
+
+async function remById(id) { return (await api("GET", "/api/reminders")).find((r) => r.id === id); }
+async function moveReminder(item, date) {
+  const r = await remById(item.id);
+  if (!r) return;
+  return run(api("PUT", `/api/reminders/${r.id}`, { title: r.title, note: r.note, next_at: `${date}T${r.next_at.slice(11, 16)}`,
+    recurrence: r.recurrence, email: !!r.email, push: !!r.push, active: !!r.active }),
+  r.recurrence === "once" ? `Reminder moved to ${date}` : `Reminder series now starts ${date}`);
+}
+
+/** Your reminders for a date range (empty if you can't use reminders). */
+export async function reminderItems(start, end) {
+  if (!can("reminders")) return [];
+  try { return await api("GET", `/api/reminders/occurrences?start=${start}&end=${end}`); } catch { return []; }
+}
+
 export function move(item, date) {
+  if (isRem(item)) return moveReminder(item, date);
   if (item.type === "bill" || item.type === "pay") {
     const kind = item.type, id = kind === "bill" ? item.bill_id : item.source_id;
     return run(api("PUT", "/api/overrides", { kind, item_id: id, orig_date: item.orig_date,
@@ -31,6 +49,11 @@ async function openSource(item) { const s = (await api("GET", "/api/income-sourc
 
 export function menuFor(item) {
   const w = W();
+  if (isRem(item)) return [
+    { label: "Edit reminder…", action: async () => { const r = await remById(item.id); if (r) reminderForm(r); } },
+    { label: item.recurrence === "once" ? "Move…" : "Move (shifts the whole series)…", action: () => moveForm({ name: item.title, date: item.date }, (d) => moveReminder(item, d)) },
+    "-", { label: "Delete reminder", danger: true, action: () => run(api("DELETE", `/api/reminders/${item.id}`), "Reminder deleted") },
+  ];
   if (item.type === "bill") return [
     item.status === "paid"
       ? { label: "Mark unpaid", disabled: !w, action: () => run(api("DELETE", `/api/payments/${item.payment_id}`), "Marked unpaid") }
@@ -66,16 +89,29 @@ export function menuFor(item) {
   ];
 }
 
-export const itemName = (it) => it.type === "extra" ? (KIND_LABEL[it.kind] || it.kind) + (it.hours ? ` ${it.hours}h` : "") : it.name;
+export const itemName = (it) => isRem(it) ? `⏰ ${it.title}` : it.type === "extra" ? (KIND_LABEL[it.kind] || it.kind) + (it.hours ? ` ${it.hours}h` : "") : it.name;
 const isIn = (it) => it.type === "pay" || it.type === "extra";
 
 function attach(node, item) {
   onContext(node, () => menuFor(item));
-  if (W()) draggable(node, { label: `${itemName(item)} ${money(item.amount_cents)}`, date: item.date, onDrop: (d) => move(item, d) });
+  if (W() || isRem(item)) draggable(node, { label: `${itemName(item)} ${money(item.amount_cents)}`, date: item.date, onDrop: (d) => move(item, d) });
+}
+
+function reminderRow(item) {
+  const row = el("div", { class: "item rem", tabindex: 0 }, el("span", { class: "rem-ic", "aria-hidden": "true" }, "⏰"),
+    el("div", { class: "body" }, el("span", { class: "name" }, item.title),
+      el("div", { class: "meta" }, [item.time, item.recurrence !== "once" ? "repeats" : null, item.note].filter(Boolean).join(" · "))),
+    el("span"),
+    el("button", { type: "button", class: "kebab", "aria-label": `Options for ${item.title}`, onclick: (e) => {
+      const r = e.currentTarget.getBoundingClientRect(); showMenu(r.left - 150, r.bottom, menuFor(item));
+    } }, "⋯"));
+  attach(row, item);
+  return row;
 }
 
 /** Full row for the week register. */
 export function itemRow(item) {
+  if (isRem(item)) return reminderRow(item);
   let check = el("span");
   if (item.type === "bill" || item.type === "pay") {
     const done = item.type === "bill" ? item.status === "paid" : item.received;
@@ -110,6 +146,13 @@ export function itemRow(item) {
 
 /** Compact chip for calendar cells. */
 export function itemChip(item) {
+  if (isRem(item)) {
+    const chip = el("button", { type: "button", class: "chip rem", title: `${item.time} ${item.title}`,
+      onclick: (e) => { const r = e.currentTarget.getBoundingClientRect(); showMenu(r.left, r.bottom, menuFor(item)); } },
+    el("span", { class: "cn" }, itemName(item)), el("span", { class: "ca" }, item.time));
+    attach(chip, item);
+    return chip;
+  }
   const cls = isIn(item) ? "in" : item.status === "overdue" ? "over" : item.status === "paid" ? "paid" : "out";
   const chip = el("button", { type: "button", class: `chip ${cls}${item.skipped ? " skipped" : ""}`,
     title: `${itemName(item)} ${money(item.amount_cents)}${item.moved ? ` (moved from ${item.orig_date})` : ""}`,
@@ -127,4 +170,4 @@ export function collect(data) {
     ...data.expenses.map((x) => ({ ...x, type: "expense" })),
   ];
 }
-export { isIn };
+export { isIn, isRem };
