@@ -464,3 +464,35 @@ def test_maintenance_and_server_backups(admin):
     assert sum(b["kind"] == "Manual" for b in lst) == 7 and sum(b["kind"] == "Before restore" for b in lst) == 1
     mkuser("m8", "member")
     assert login("m8").get("/api/admin/backups").status_code == 403
+
+
+def test_smtp_no_auth_relay(admin, monkeypatch):
+    import smtplib
+    calls = []
+
+    class FakeSMTP:
+        def __init__(self, host, port, local_hostname=None, timeout=None):
+            calls.append(("connect", host, port, local_hostname))
+        def starttls(self, context=None):
+            calls.append(("starttls",))
+        def login(self, u, p):
+            calls.append(("login", u))
+        def send_message(self, m):
+            calls.append(("send", m["From"], m["To"]))
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+    settings.update({"smtp_host": "smtp-relay.gmail.com", "smtp_port": 587, "smtp_tls": "starttls", "smtp_from": "bills@example.com",
+                     "smtp_auth": "none", "smtp_user": "leftover@example.com", "smtp_helo": "bills.example.com"})
+    try:
+        assert notify.send_email("jc@example.com", "Hi", "Body") is True
+        assert ("connect", "smtp-relay.gmail.com", 587, "bills.example.com") in calls and ("starttls",) in calls
+        assert not any(c[0] == "login" for c in calls)                 # relay mode never signs in
+        calls.clear(); settings.update({"smtp_auth": "password"})
+        notify.send_email("jc@example.com", "Hi", "Body")
+        assert ("login", "leftover@example.com") in calls               # password mode still does
+        assert admin.put("/api/admin/settings", json={"smtp_helo": "not a host!"}, headers=H).status_code == 422
+        assert admin.put("/api/admin/settings", json={"smtp_auth": "plain"}, headers=H).status_code == 422
+    finally:
+        settings.update({"smtp_host": "", "smtp_from": "", "smtp_user": "", "smtp_helo": "", "smtp_auth": "password"})

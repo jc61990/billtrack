@@ -35,6 +35,8 @@ DEFAULTS = {
     "smtp_host": os.getenv("BT_SMTP_HOST", ""),
     "smtp_port": _int("BT_SMTP_PORT", 587),
     "smtp_tls": os.getenv("BT_SMTP_TLS", "starttls"),
+    "smtp_auth": os.getenv("BT_SMTP_AUTH", "password"),   # password | none (IP-allow-listed relay)
+    "smtp_helo": os.getenv("BT_SMTP_HELO", ""),
     "smtp_user": os.getenv("BT_SMTP_USER", ""),
     "smtp_pass": os.getenv("BT_SMTP_PASS", ""),
     "smtp_from": os.getenv("BT_SMTP_FROM", os.getenv("BT_SMTP_USER", "")),

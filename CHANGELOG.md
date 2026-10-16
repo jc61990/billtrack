@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.8.1 - 2026-10-16
+### Added
+- Email **Sign in** option: *Username and password* or *None* for relays that allow-list the server's IP (e.g.
+  Google Workspace SMTP relay). TLS (STARTTLS/SSL with certificate checks) is still required either way.
+- Optional **EHLO name** (hostname announced to the mail server; Google's relay can require a real domain).
+- README: step-by-step Google Workspace SMTP relay setup.
+### Notes
+- Existing installs keep working unchanged: a blank username never signed in before either.
+
 ## 2.8.0 - 2026-10-16
 ### Added
 - **Admin → Backup & system** rebuilt:

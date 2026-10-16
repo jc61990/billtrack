@@ -45,13 +45,15 @@ def send_email(to: str, subject: str, body: str) -> bool:
     msg.set_content(body)
     ctx = ssl.create_default_context()  # verifies cert + hostname
     host, port = settings.get("smtp_host"), settings.get("smtp_port")
+    helo = settings.get("smtp_helo") or None   # name announced in EHLO; default = this machine's FQDN
     if settings.get("smtp_tls") == "ssl":
-        s = smtplib.SMTP_SSL(host, port, context=ctx, timeout=20)
+        s = smtplib.SMTP_SSL(host, port, local_hostname=helo, context=ctx, timeout=20)
     else:
-        s = smtplib.SMTP(host, port, timeout=20)
-        s.starttls(context=ctx)  # raises if unsupported - credentials are never sent in clear
+        s = smtplib.SMTP(host, port, local_hostname=helo, timeout=20)
+        s.starttls(context=ctx)  # raises if unsupported - mail is never sent unencrypted
     with s:
-        if settings.get("smtp_user"):
+        # "none": the relay trusts this server's IP (e.g. Google Workspace SMTP relay) - no username/password
+        if settings.get("smtp_auth") == "password" and settings.get("smtp_user"):
             s.login(settings.get("smtp_user"), settings.get("smtp_pass"))
         s.send_message(msg)
     return True

@@ -66,6 +66,11 @@ def validate(key: str, value):
         raise ValueError("plaid_env must be production or sandbox")
     if key == "plaid_client_id" and value and not value.isalnum():
         raise ValueError("Plaid client ID should be letters and numbers only")
+    if key == "smtp_auth" and value not in ("password", "none"):
+        raise ValueError("smtp_auth must be password or none")
+    if key == "smtp_helo" and value and not __import__("re").fullmatch(
+            r"[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?)+", value):
+        raise ValueError("EHLO name must be a full hostname like bills.example.com")
     if key == "smtp_tls" and value not in ("starttls", "ssl"):
         raise ValueError("smtp_tls must be starttls or ssl")
     if key in ("base_url", "ntfy_server") and value and not value.startswith(("https://", "http://")):

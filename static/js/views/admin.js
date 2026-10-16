@@ -222,8 +222,12 @@ async function settings(root) {
       f("smtp_host", "Server", "text", { placeholder: "smtp.gmail.com" }),
       el("div", { class: "row2" }, f("smtp_port", "Port", "number", { min: 1, max: 65535 }),
         sel("smtp_tls", "Security", [["starttls", "STARTTLS (587)"], ["ssl", "SSL/TLS (465)"]])),
+      sel("smtp_auth", "Sign in to the mail server", [["password", "Username and password"],
+        ["none", "None: this server's IP is allow-listed (e.g. Google Workspace SMTP relay)"]]),
       f("smtp_user", "Username"), f("smtp_pass", "Password", "password", { placeholder: s.smtp_pass_set ? "•••••••• (saved, leave blank to keep)" : "",
-        hint: "Stored encrypted. Never shown again." }),
+        hint: "Stored encrypted. Never shown again. Not used when sign-in is None." }),
+      f("smtp_helo", "EHLO name (optional)", "text", { placeholder: "bills.example.com",
+        hint: "The hostname announced to the mail server. Leave blank to use this machine's name. Google's relay may want a real domain name here." }),
       f("smtp_from", "From address", "email")),
     el("fieldset", {}, el("legend", {}, "Bank sync (Plaid)"),
       el("p", { class: "hint" }, "Free personal-use keys: dashboard.plaid.com → sign up → Personal use → Developers → Keys."),
@@ -244,7 +248,7 @@ async function settings(root) {
       if (!n.name) continue;
       if (n.type === "checkbox") v[n.name] = n.checked;
       else if (n.type === "number" || n.name.endsWith("weekday") || n.name === "week_start") v[n.name] = Number(n.value);
-      else if (n.name === "plaid_env") v[n.name] = n.value;
+      else if (n.name === "plaid_env" || n.name === "smtp_auth") v[n.name] = n.value;
       else if (n.type === "password") { if (n.value) v[n.name] = n.value; }
       else v[n.name] = n.value.trim();
     }
