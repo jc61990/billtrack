@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.2.0 - 2026-10-16
+### Added
+- `setup.sh` now serves BillTrack on **HTTPS port 443** via nginx by default. The app stays on `127.0.0.1:8080`.
+- Auto-generated **local CA** (ECDSA P-256, 10 y) + **server certificate** (397 d, SAN = hostname, `.local`,
+  `localhost`, all IPv4s, plus `--san` extras). Server cert re-issued automatically on re-run when near expiry or
+  when names/IPs change; the CA is kept so devices stay trusted.
+- Port 80 redirects to HTTPS and serves `/billtrack-ca.crt`; installer prints its SHA-256 fingerprint and
+  per-device trust steps.
+- Installer options: `--san`, `--regen-cert`, `--regen-ca`, `--no-proxy`, `--help`.
+- Opens 80/443 in ufw when active; fills in Admin → Settings → Public URL on first install; HTTPS self-check.
+### Security
+- nginx: TLS 1.2/1.3 only, ECDHE-ECDSA AEAD ciphers, no session tickets, `server_tokens off`, 1 MB body cap,
+  header/body timeouts. `X-Forwarded-For` overwritten (not appended) and `X-Forwarded-Host` stripped so clients
+  can't spoof IPs or origins; the app trusts proxy headers from 127.0.0.1 only.
+- IPv6 listeners only added when the host has IPv6 (nginx fails to start otherwise).
+
 ## 2.1.0 - 2026-10-14
 ### Security
 - **Encrypted browser channel.** Each page load does a fresh ECDH P-256 key exchange (browser private key is

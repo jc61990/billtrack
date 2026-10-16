@@ -3,14 +3,37 @@
 #   - code in $APP_DIR is replaced from THIS checkout (git is the source of truth)
 #   - env file, database key and database are NEVER overwritten
 #   - a v1.0 plaintext database is encrypted automatically (plaintext copy kept as .plain.bak)
+#   - HTTPS on 443 via nginx with an auto-generated local CA + server certificate (CA kept across re-runs,
+#     server cert re-issued only when it's near expiry or the machine's names/IPs change)
+#
+# Options:
+#   --no-proxy            app only on 127.0.0.1:$PORT (bring your own proxy / Tailscale)
+#   --san a,b,c           extra hostnames or IPs to put on the certificate (e.g. bills.lan,10.0.0.5)
+#   --regen-cert          force a new server certificate (CA unchanged, devices stay trusted)
+#   --regen-ca            new CA + server cert (every device must re-trust the new CA)
 set -euo pipefail
+
+PROXY=1; EXTRA_SAN=""; REGEN_CERT=0; REGEN_CA=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-proxy) PROXY=0 ;;
+    --san) EXTRA_SAN="${2:-}"; shift ;;
+    --san=*) EXTRA_SAN="${1#*=}" ;;
+    --regen-cert) REGEN_CERT=1 ;;
+    --regen-ca) REGEN_CA=1; REGEN_CERT=1 ;;
+    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    *) echo "Unknown option: $1 (see --help)"; exit 1 ;;
+  esac
+  shift
+done
 
 APP_DIR=${APP_DIR:-/opt/billtrack}
 DATA_DIR=${DATA_DIR:-/var/lib/billtrack}
 ENV_FILE=${ENV_FILE:-/etc/billtrack/billtrack.env}
 KEY_FILE=${KEY_FILE:-/etc/billtrack/db.key}
 DB_FILE="$DATA_DIR/billtrack.db"
-BIND=${BIND:-127.0.0.1}
+BIND=${BIND:-127.0.0.1}           # app stays on loopback; nginx is the only thing on the network
+TLS_DIR=${TLS_DIR:-/etc/billtrack/tls}
 PORT=${PORT:-8080}
 SVC_USER=billtrack
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,7 +43,8 @@ SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "==> Packages"
 apt-get update -qq
-apt-get install -y -qq python3 python3-venv rsync >/dev/null
+apt-get install -y -qq python3 python3-venv rsync curl >/dev/null
+if [[ $PROXY == 1 ]]; then apt-get install -y -qq nginx openssl >/dev/null; fi
 
 echo "==> Service user"
 id "$SVC_USER" &>/dev/null || useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin "$SVC_USER"
@@ -124,10 +148,170 @@ if [[ "$USERS" == "0" ]]; then
   manage adduser "$U" admin
 fi
 
+# ---------------------------------------------------------------------------------------------------------
+# HTTPS proxy (nginx) + self-signed local CA
+# ---------------------------------------------------------------------------------------------------------
+URL="http://$BIND:$PORT"
+if [[ $PROXY == 1 ]]; then
+  echo "==> TLS certificate"
+  install -d -m 700 -o root -g root "$TLS_DIR"
+  HOST_S=$(hostname -s); HOST_F=$(hostname -f 2>/dev/null || hostname -s)
+  mapfile -t IPS < <(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+(\.[0-9]+){3}$' || true)
+  NAMES=("$HOST_S" "$HOST_F" "$HOST_S.local" "localhost")
+  ADDRS=("127.0.0.1" "${IPS[@]}")
+  IFS=',' read -ra EXTRA <<< "$EXTRA_SAN"
+  for x in "${EXTRA[@]}"; do
+    x="${x// /}"; [[ -z "$x" ]] && continue
+    if [[ "$x" =~ ^[0-9]+(\.[0-9]+){3}$ || "$x" == *:* ]]; then ADDRS+=("$x"); else NAMES+=("$x"); fi
+  done
+  SAN=$( { printf 'DNS:%s\n' "${NAMES[@]}"; printf 'IP:%s\n' "${ADDRS[@]}"; } | awk '!seen[$0]++' | paste -sd, -)
+
+  if [[ $REGEN_CA == 1 || ! -f "$TLS_DIR/ca.key" || ! -f "$TLS_DIR/ca.crt" ]]; then
+    openssl ecparam -name prime256v1 -genkey -noout -out "$TLS_DIR/ca.key"
+    chmod 600 "$TLS_DIR/ca.key"
+    openssl req -x509 -new -key "$TLS_DIR/ca.key" -sha256 -days 3650 -out "$TLS_DIR/ca.crt" \
+      -subj "/CN=BillTrack Local CA ($HOST_S)/O=BillTrack" \
+      -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+      -addext "keyUsage=critical,keyCertSign,cRLSign" \
+      -addext "subjectKeyIdentifier=hash" 2>/dev/null
+    REGEN_CERT=1
+    echo "    New local CA created ($TLS_DIR/ca.crt). Devices must trust it once (see below)."
+  fi
+
+  NEED=$REGEN_CERT
+  [[ -f "$TLS_DIR/server.crt" && -f "$TLS_DIR/server.key" ]] || NEED=1
+  [[ "$(cat "$TLS_DIR/server.san" 2>/dev/null)" == "$SAN" ]] || NEED=1
+  if [[ $NEED == 0 ]] && ! openssl x509 -checkend $((30*86400)) -noout -in "$TLS_DIR/server.crt" >/dev/null; then NEED=1; fi
+  if [[ $NEED == 1 ]]; then
+    openssl ecparam -name prime256v1 -genkey -noout -out "$TLS_DIR/server.key"
+    chmod 600 "$TLS_DIR/server.key"
+    EXT=$(mktemp)
+    printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nsubjectAltName=%s\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid\n' "$SAN" > "$EXT"
+    openssl req -new -key "$TLS_DIR/server.key" -subj "/CN=$HOST_S" -out "$TLS_DIR/server.csr" 2>/dev/null
+    # 397 days: inside the limit Apple/Chrome enforce for TLS server certificates
+    openssl x509 -req -in "$TLS_DIR/server.csr" -CA "$TLS_DIR/ca.crt" -CAkey "$TLS_DIR/ca.key" -CAcreateserial \
+      -days 397 -sha256 -extfile "$EXT" -out "$TLS_DIR/server.crt" 2>/dev/null
+    rm -f "$EXT" "$TLS_DIR/server.csr"
+    cat "$TLS_DIR/server.crt" "$TLS_DIR/ca.crt" > "$TLS_DIR/fullchain.crt"
+    echo "$SAN" > "$TLS_DIR/server.san"
+    echo "    Server certificate issued for: $SAN"
+  else
+    echo "    Keeping existing certificate ($SAN)"
+  fi
+  install -d -m 755 /var/www/billtrack
+  install -m 644 "$TLS_DIR/ca.crt" /var/www/billtrack/billtrack-ca.crt
+
+  echo "==> nginx (443 -> 127.0.0.1:$PORT)"
+  # Only listen on IPv6 if the kernel has it (nginx refuses to start otherwise)
+  if [[ -s /proc/net/if_inet6 ]]; then
+    L6_80="listen [::]:80 default_server;"; L6_443="listen [::]:443 ssl http2 default_server;"
+  else
+    L6_80="# IPv6 not available on this host"; L6_443="$L6_80"
+  fi
+  cat > /etc/nginx/sites-available/billtrack <<NGINX
+# Managed by BillTrack setup.sh - re-running setup overwrites this file.
+server {
+    listen 80 default_server;
+    $L6_80
+    server_name _;
+    server_tokens off;
+    # The CA certificate is public; served over HTTP only so a new device can fetch it before trusting HTTPS.
+    location = /billtrack-ca.crt {
+        root /var/www/billtrack;
+        default_type application/x-x509-ca-cert;
+        add_header Content-Disposition 'attachment; filename="billtrack-ca.crt"';
+    }
+    location / { return 301 https://\$host\$request_uri; }
+}
+
+server {
+    listen 443 ssl http2 default_server;
+    $L6_443
+    server_name _;
+    server_tokens off;
+
+    ssl_certificate     $TLS_DIR/fullchain.crt;
+    ssl_certificate_key $TLS_DIR/server.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers off;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:BillTrackTLS:10m;
+    ssl_session_tickets off;
+
+    client_max_body_size 1m;
+    client_body_timeout 15s;
+    client_header_timeout 15s;
+
+    location = /billtrack-ca.crt {
+        root /var/www/billtrack;
+        default_type application/x-x509-ca-cert;
+    }
+    location / {
+        proxy_pass http://127.0.0.1:$PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-For \$remote_addr;   # overwrite, never append client-supplied values
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host "";
+        proxy_read_timeout 60s;
+        proxy_buffering on;
+    }
+}
+NGINX
+  ln -sf /etc/nginx/sites-available/billtrack /etc/nginx/sites-enabled/billtrack
+  if [[ -L /etc/nginx/sites-enabled/default ]]; then
+    rm /etc/nginx/sites-enabled/default
+    echo "    Disabled nginx's default site (it also listens on port 80)"
+  fi
+  nginx -t -q
+  systemctl enable -q nginx
+  systemctl reload nginx 2>/dev/null || systemctl restart nginx
+
+  if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
+    ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null
+    echo "    ufw: opened 80/tcp (redirect + CA download) and 443/tcp"
+  fi
+
+  MAIN_IP="${IPS[0]:-127.0.0.1}"
+  URL="https://$MAIN_IP"
+  # Fill in Admin > Settings > Public URL on first install so email links work
+  sudo -u "$SVC_USER" env BT_DB_PATH="$DB_FILE" BT_DB_KEY_FILE="$KEY_FILE" PYTHONPATH="$APP_DIR/src" \
+    "$APP_DIR/.venv/bin/python" -c "from app import settings
+if not settings.get('base_url'):
+    settings.update({'base_url': '$URL'}); print('    Public URL set to $URL (change in Admin > Settings)')"
+
+  sleep 1
+  if curl -s --cacert "$TLS_DIR/ca.crt" --resolve "$HOST_S:443:127.0.0.1" "https://$HOST_S/healthz" | grep -q ok; then
+    echo "    HTTPS check: OK"
+  else
+    echo "    HTTPS check FAILED - see: sudo journalctl -u billtrack -n 50 ; sudo nginx -t"
+  fi
+fi
+
 if [[ $NEW_KEY == 1 ]]; then
   echo
   echo "!!  BACK UP $KEY_FILE somewhere safe (password manager). Without it the database cannot be opened."
-  echo
 fi
-echo "==> Done. Listening on http://$BIND:$PORT  (put HTTPS in front; see README)"
+echo
+echo "==> Done. BillTrack is at: $URL"
+if [[ $PROXY == 1 ]]; then
+  FP=$(openssl x509 -in "$TLS_DIR/ca.crt" -noout -fingerprint -sha256 | cut -d= -f2)
+  cat <<MSG
+
+    Trust the BillTrack CA once on each device to get rid of the browser warning:
+      1. On the device, open  http://$MAIN_IP/billtrack-ca.crt
+      2. Check its SHA-256 fingerprint matches:
+         $FP
+      3. Install it:
+         - iPhone/iPad: Settings > Profile Downloaded > Install, then
+                        Settings > General > About > Certificate Trust Settings > enable "BillTrack Local CA"
+         - Android:     Settings > Security > Encryption & credentials > Install a certificate > CA certificate
+         - Windows:     double-click > Install Certificate > Local Machine > Trusted Root Certification Authorities
+         - macOS:       open in Keychain Access (System) > double-click > Trust: Always Trust
+         - Linux/Firefox: Firefox has its own store: Settings > Certificates > View > Authorities > Import
+    Names on the certificate: $SAN
+    New IP or hostname later?  sudo ./setup.sh --san <name-or-ip>   (devices stay trusted)
+MSG
+fi
 systemctl --no-pager --lines=0 status billtrack || true

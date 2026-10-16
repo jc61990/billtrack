@@ -4,7 +4,7 @@ Self-hosted bill, paycheck, savings and investment tracker built around the **we
 roles, two-factor sign-in, alerts by email and phone push, and encryption at every layer: the database on disk,
 secrets inside it, and every byte of browser traffic.
 
-![version](https://img.shields.io/badge/version-2.1.0-blue)
+![version](https://img.shields.io/badge/version-2.2.0-blue)
 
 ## Features
 
@@ -48,19 +48,53 @@ your data to send alerts and build reports, so this is not zero-knowledge end-to
 
 ## Install
 
-### Ubuntu + systemd
+### Ubuntu + systemd (HTTPS on 443 out of the box)
 ```bash
 git clone <your-repo> billtrack && cd billtrack
-sudo ./setup.sh                 # creates the DB key, installs the service, prompts for the admin login
+sudo ./setup.sh                 # app + nginx on 443 + self-signed certificate + admin login
 ```
-Then sign in and finish setup in **Admin → Settings** (public URL, email, push, time zone, pay-week start).
+It prints the address (e.g. `https://192.168.1.50`) and how to trust the certificate on your devices.
+Then finish setup in **Admin → Settings** (email, push, time zone, pay-week start).
+
+| Option | Use |
+|---|---|
+| `--san bills.lan,10.0.0.5` | Extra hostnames / IPs on the certificate (DNS names you've set up, a second NIC, a VPN IP) |
+| `--regen-cert` | Force a new server certificate. Devices stay trusted (same CA) |
+| `--regen-ca` | New CA + certificate. Every device must re-trust it |
+| `--no-proxy` | Skip nginx; app only on `127.0.0.1:8080` (use with Tailscale or your own proxy) |
 
 `setup.sh` is safe to re-run after `git pull`: it updates code and dependencies and **never** overwrites the env
-file, the database key or the database. Code: `/opt/billtrack/src` (root-owned). Data: `/var/lib/billtrack`.
-Key: `/etc/billtrack/db.key`. **Back up the key separately** (password manager); without it the data is gone.
+file, the database key, the database or the CA. Code: `/opt/billtrack/src` (root-owned). Data:
+`/var/lib/billtrack`. Key: `/etc/billtrack/db.key`. **Back up the key separately** (password manager); without
+it the data is gone.
 
 Upgrading from 1.x: `git pull && sudo ./setup.sh`. Plaintext 1.0 databases are encrypted automatically; the
 original user becomes admin.
+
+#### How HTTPS is set up
+- The app only listens on `127.0.0.1:8080`. **nginx** is the only thing on the network: port 443 (TLS 1.2/1.3,
+  ECDSA, HTTP/2) proxies to the app; port 80 redirects to HTTPS and serves the CA certificate for download.
+- `setup.sh` creates a **local certificate authority** (`/etc/billtrack/tls/ca.crt`, 10 years, private key
+  root-only) and a **server certificate** signed by it (397 days, ECDSA P-256) covering the hostname,
+  `hostname.local`, `localhost` and every IPv4 address on the box. Re-running setup re-issues the server
+  certificate automatically when it's within 30 days of expiry or the machine's names/IPs change. Because devices
+  trust the CA, not the server certificate, renewals never need re-trusting.
+- Firewall: if `ufw` is active, 80/tcp and 443/tcp are opened.
+- Admin → Settings → Public URL is filled in with `https://<server-ip>` on first install.
+
+#### Trusting the certificate (once per device)
+Until you do this the browser shows a warning. Open `http://<server-ip>/billtrack-ca.crt` on the device, check
+the SHA-256 fingerprint matches the one `setup.sh` printed, then:
+
+| Device | Steps |
+|---|---|
+| iPhone / iPad | Settings → *Profile Downloaded* → Install, then Settings → General → About → Certificate Trust Settings → enable *BillTrack Local CA* |
+| Android | Settings → Security → Encryption & credentials → Install a certificate → CA certificate |
+| Windows | Double-click → Install Certificate → Local Machine → *Trusted Root Certification Authorities* |
+| macOS | Open in Keychain Access (System keychain) → double-click → Trust → *Always Trust* |
+| Firefox (any OS) | Settings → Privacy & Security → Certificates → View → Authorities → Import |
+
+Print the fingerprint again any time: `sudo openssl x509 -in /etc/billtrack/tls/ca.crt -noout -fingerprint -sha256`
 
 ### Docker
 ```bash
@@ -71,11 +105,16 @@ docker compose up -d --build
 docker compose exec billtrack python -m app.manage adduser jc admin
 ```
 
-### HTTPS (required for phones)
-- **Tailscale:** `sudo tailscale serve --bg 8080`, open `https://<host>.<tailnet>.ts.net`.
-- **Caddy:** `bills.example.com { reverse_proxy 127.0.0.1:8080 }`
-Then *Add to Home Screen* (iPhone) / *Install app* (Android, Chrome, Edge). Run **one** server process (default):
-channels and pending 2FA sign-ins are held in memory.
+### Other ways to reach it
+- **Tailscale** (works away from home, real certificate): `sudo ./setup.sh --no-proxy` then
+  `sudo tailscale serve --bg 8080` and open `https://<host>.<tailnet>.ts.net`.
+- **Your own proxy** (Caddy, Traefik, existing nginx): `--no-proxy`, proxy to `127.0.0.1:8080`, pass `Host` and
+  `X-Forwarded-Proto: https`.
+- **Docker** doesn't include a proxy; put one of the above in front of `127.0.0.1:8080`.
+
+HTTPS is required, not optional: login cookies are HTTPS-only and browsers only allow the encrypted channel's
+WebCrypto on HTTPS pages. Install to the home screen with *Add to Home Screen* (iPhone) / *Install app* (Android,
+Chrome, Edge). Run **one** app process (default): channels and pending 2FA sign-ins are held in memory.
 
 ## Roles
 
