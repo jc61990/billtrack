@@ -319,3 +319,40 @@ def test_bank_accounts_and_cards(admin):
     v2 = login("v2")
     assert v2.post(f"/api/accounts/{card['id']}/balance", json={"balance_cents": 1}, headers=H).status_code == 403
     assert v2.get("/api/accounts/overview").status_code == 200
+
+
+def test_net_worth(admin):
+    with db.tx() as con:
+        for t in ("accounts", "networth_items", "networth_snapshots", "inv_accounts"):
+            con.execute(f"DELETE FROM {t}")
+    admin.post("/api/accounts", json={"name": "Chk", "kind": "checking", "balance_cents": 300000}, headers=H)
+    admin.post("/api/accounts", json={"name": "Visa", "kind": "credit", "balance_cents": 50000, "credit_limit_cents": 100000}, headers=H)
+    admin.post("/api/accounts", json={"name": "Car loan", "kind": "loan", "balance_cents": 1000000}, headers=H)
+    h = admin.post("/api/networth/items", json={"name": "House", "side": "asset", "category": "property",
+                                                "value_cents": 30000000}, headers=H).json()
+    admin.post("/api/networth/items", json={"name": "Mortgage", "side": "liability", "category": "mortgage",
+                                            "value_cents": 20000000}, headers=H)
+    assert admin.post("/api/networth/items", json={"name": "x", "side": "asset", "category": "mortgage"},
+                      headers=H).status_code == 422
+    ia = admin.post("/api/investments/accounts", json={"name": "IRA", "cash_cents": 500000}, headers=H).json()
+    nw = admin.get("/api/networth").json()
+    assert nw["assets_cents"] == 300000 + 500000 + 30000000
+    assert nw["liabilities_cents"] == 50000 + 1000000 + 20000000
+    assert nw["net_cents"] == nw["assets_cents"] - nw["liabilities_cents"]
+    hist = admin.get("/api/networth/history").json()
+    assert hist[-1]["net_cents"] == nw["net_cents"]
+    # old snapshot -> change figures
+    with db.tx() as con:
+        con.execute("INSERT INTO networth_snapshots VALUES (?,?,?,?,?,?,?)",
+                    ((ledger.today() - timedelta(days=40)).isoformat(), 100000, 0, 30000000, 0, 0, 20000000))
+    nw = admin.get("/api/networth").json()
+    assert nw["changes"]["30d"] == nw["net_cents"] - (100000 + 30000000 - 20000000)
+    # overview uses the same number
+    t = ledger.today()
+    assert admin.get(f"/api/reports/overview?start={t}&end={t}").json()["net_worth_cents"] == nw["net_cents"]
+    # someone who can't see investments gets a net worth without them
+    mkuser("m3", "member")
+    uid = [u for u in admin.get("/api/admin/users").json() if u["username"] == "m3"][0]["id"]
+    admin.put(f"/api/admin/users/{uid}", json={"role": "member", "perms_deny": ["investments:read"]}, headers=H)
+    m = login("m3")
+    assert m.get("/api/networth").json()["net_cents"] == nw["net_cents"] - 500000

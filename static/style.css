@@ -245,3 +245,20 @@ dialog h3 { margin: 0 0 1rem; font-size: 1.1rem; }
 .util-tick.guide { background: var(--ink-2); opacity: 0.5; }
 .util-legend { display: flex; justify-content: space-between; font-size: 0.82rem; margin-top: 0.3rem; }
 .util-legend .good { color: var(--in); } .util-legend .warn { color: var(--warn); } .util-legend .bad { color: var(--out); }
+
+/* ---------- net worth ---------- */
+.nw-hero { text-align: center; }
+.nw-big { font-size: clamp(2rem, 9vw, 3rem); font-weight: 750; font-variant-numeric: tabular-nums; letter-spacing: -0.03em; }
+.chgs { display: flex; flex-wrap: wrap; gap: 0.4rem; justify-content: center; margin: 0.4rem 0; }
+.chg { font-size: 0.85rem; padding: 0.15rem 0.55rem; border-radius: 999px; background: var(--paper); border: 1px solid var(--rule);
+  font-variant-numeric: tabular-nums; }
+.chg.up { color: var(--in); } .chg.down { color: var(--out); }
+.chg small { color: var(--ink-2); }
+.comp .spread { margin-top: 0.6rem; }
+.stack-bar { display: flex; height: 18px; border-radius: 5px; overflow: hidden; background: var(--paper); margin: 0.3rem 0; min-width: 4px; }
+.stack-bar i, .stack-legend i { display: block; height: 100%; }
+.stack-legend { display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem; font-size: 0.8rem; color: var(--ink-2); }
+.stack-legend span { display: inline-flex; align-items: center; gap: 0.3rem; }
+.stack-legend i { width: 10px; height: 10px; border-radius: 2px; }
+.a0 { background: var(--in); } .a1 { background: color-mix(in srgb, var(--in) 60%, var(--focus)); } .a2 { background: color-mix(in srgb, var(--in) 45%, var(--sheet)); }
+.l0 { background: var(--out); } .l1 { background: color-mix(in srgb, var(--out) 60%, var(--warn)); } .l2 { background: color-mix(in srgb, var(--out) 45%, var(--sheet)); }

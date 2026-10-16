@@ -101,6 +101,14 @@ CREATE TABLE IF NOT EXISTS inv_snapshots (
 CREATE TABLE IF NOT EXISTS account_history (
   account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, date TEXT NOT NULL,
   balance_cents INTEGER NOT NULL, PRIMARY KEY (account_id, date));
+CREATE TABLE IF NOT EXISTS networth_items (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, side TEXT NOT NULL, category TEXT NOT NULL DEFAULT 'other',
+  value_cents INTEGER NOT NULL DEFAULT 0, value_updated TEXT, notes TEXT NOT NULL DEFAULT '',
+  active INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS networth_snapshots (
+  date TEXT PRIMARY KEY, cash_cents INTEGER NOT NULL, investments_cents INTEGER NOT NULL,
+  other_assets_cents INTEGER NOT NULL, cards_cents INTEGER NOT NULL, loans_cents INTEGER NOT NULL,
+  other_liabilities_cents INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_extra_date ON income_extra(date);
 CREATE INDEX IF NOT EXISTS ix_exp_date ON expenses(date);
 CREATE INDEX IF NOT EXISTS ix_audit_ts ON audit_log(ts);

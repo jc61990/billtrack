@@ -5,6 +5,7 @@ import * as week from "./views/week.js";
 import * as cal from "./views/calendar.js";
 import * as overview from "./views/overview.js";
 import * as accounts from "./views/accounts.js";
+import * as networth from "./views/networth.js";
 import * as bills from "./views/bills.js";
 import * as income from "./views/income.js";
 import * as trackers from "./views/trackers.js";
@@ -16,7 +17,8 @@ import * as admin from "./views/admin.js";
 // [key, module, nav label, required permission, on mobile bottom bar]
 const VIEWS = [
   ["week", week, "Week", "finance:read", true], ["cal", cal, "Calendar", "finance:read", true],
-  ["accounts", accounts, "Accounts", "finance:read", true], ["overview", overview, "Overview", "finance:read"],
+  ["accounts", accounts, "Accounts", "finance:read", true], ["networth", networth, "Net worth", "finance:read"],
+  ["overview", overview, "Overview", "finance:read"],
   ["bills", bills, "Bills", "finance:read"],
   ["income", income, "Income", "finance:read"], ["trackers", trackers, "Trackers", "trackers:read"],
   ["investments", investments, "Investments", "investments:read"], ["alerts", alerts, "Alerts", "self", true],

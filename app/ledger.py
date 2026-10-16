@@ -249,23 +249,21 @@ def overview(con, lo: date, hi: date, group: str, perms: set):
                            **{k: w[k] for k in ("in_cents", "out_cents", "net_cents")}})
             cur += timedelta(days=7)
     accts = rows(con, "SELECT id, name, kind, balance_cents, balance_updated FROM accounts ORDER BY name")
-    assets = sum(a["balance_cents"] for a in accts if a["kind"] not in LIABILITY)
-    debts = sum(a["balance_cents"] for a in accts if a["kind"] in LIABILITY)
+    nwv = networth(con, perms)
+    assets, debts = nwv["assets_cents"], nwv["liabilities_cents"]
     res = {k: s[k] for k in ("start", "end", "in_cents", "out_cents", "net_cents", "pay_cents", "extra_cents",
                              "ot_cents", "ot_hours", "bills_cents", "expenses_cents", "unpaid_cents", "by_account")}
     res.update(
         spending_by_category=sorted([{"category": k, "cents": v} for k, v in cats.items()], key=lambda x: -x["cents"]),
         income_by_kind=[{"kind": k, "cents": v} for k, v in kinds.items() if v],
         series=series, accounts=accts, assets_cents=assets, debts_cents=debts)
-    nw = assets - debts
     if "investments:read" in perms:
         inv = investments(con)
         res["investments"] = {k: inv[k] for k in ("value_cents", "cost_cents", "gain_cents")}
-        nw += inv["value_cents"]
     if "trackers:read" in perms:
         res["trackers"] = [{k: t[k] for k in ("id", "name", "kind", "current_cents", "target_cents", "progress",
                                               "remaining_cents", "weekly_needed_cents")} for t in trackers(con)]
-    res["net_worth_cents"] = nw
+    res["net_worth_cents"] = nwv["net_cents"]
     return res
 
 
@@ -349,3 +347,78 @@ def snapshot_accounts(con):
     for a in rows(con, "SELECT id, balance_cents FROM accounts"):
         con.execute("INSERT OR IGNORE INTO account_history(account_id,date,balance_cents) VALUES (?,?,?)",
                     (a["id"], today().isoformat(), a["balance_cents"]))
+
+
+# ---------- net worth ----------
+ASSET_CATS = {"property": "Home / property", "vehicle": "Vehicle", "valuables": "Valuables", "retirement": "Pension / retirement (not tracked)",
+              "receivable": "Money owed to you", "other": "Other asset"}
+LIAB_CATS = {"mortgage": "Mortgage", "auto": "Auto loan", "student": "Student loan", "personal": "Personal loan",
+             "medical": "Medical debt", "tax": "Taxes owed", "other": "Other debt"}
+NW_PARTS = ("cash_cents", "investments_cents", "other_assets_cents", "cards_cents", "loans_cents", "other_liabilities_cents")
+
+
+def _nw_parts(con) -> dict:
+    accts = rows(con, "SELECT kind, balance_cents FROM accounts")
+    items = rows(con, "SELECT side, value_cents FROM networth_items WHERE active=1")
+    return {
+        "cash_cents": sum(a["balance_cents"] for a in accts if a["kind"] in BANK or a["kind"] == "other"),
+        "investments_cents": investments(con)["value_cents"],
+        "other_assets_cents": sum(i["value_cents"] for i in items if i["side"] == "asset"),
+        "cards_cents": sum(max(0, a["balance_cents"]) for a in accts if a["kind"] == "credit"),
+        "loans_cents": sum(max(0, a["balance_cents"]) for a in accts if a["kind"] == "loan"),
+        "other_liabilities_cents": sum(i["value_cents"] for i in items if i["side"] == "liability"),
+    }
+
+
+def _nw_totals(parts: dict, perms: set) -> dict:
+    inv = parts["investments_cents"] if "investments:read" in perms else 0
+    assets = parts["cash_cents"] + inv + parts["other_assets_cents"]
+    liab = parts["cards_cents"] + parts["loans_cents"] + parts["other_liabilities_cents"]
+    return {"assets_cents": assets, "liabilities_cents": liab, "net_cents": assets - liab}
+
+
+def snapshot_networth(con):
+    p = _nw_parts(con)
+    con.execute(f"INSERT INTO networth_snapshots(date,{','.join(NW_PARTS)}) VALUES (?,?,?,?,?,?,?) "
+                f"ON CONFLICT(date) DO UPDATE SET {','.join(f'{k}=excluded.{k}' for k in NW_PARTS)}",
+                (today().isoformat(), *[p[k] for k in NW_PARTS]))
+
+
+def networth_history(con, days: int, perms: set):
+    since = (today() - timedelta(days=days)).isoformat()
+    out = []
+    for r in rows(con, "SELECT * FROM networth_snapshots WHERE date >= ? ORDER BY date", (since,)):
+        out.append({"date": r["date"], **_nw_totals(r, perms)})
+    return out
+
+
+def networth(con, perms: set):
+    parts = _nw_parts(con)
+    tot = _nw_totals(parts, perms)
+    accts = rows(con, "SELECT id, name, kind, balance_cents, balance_updated, color FROM accounts ORDER BY name COLLATE NOCASE")
+    items = rows(con, "SELECT * FROM networth_items ORDER BY side, value_cents DESC")
+    assets = [{"source": "account", **a} for a in accts if a["kind"] in BANK or a["kind"] == "other"]
+    liabs = [{"source": "account", **a} for a in accts if a["kind"] in ("credit", "loan")]
+    if "investments:read" in perms:
+        for a in investments(con)["accounts"]:
+            assets.append({"source": "investment", "id": a["id"], "name": a["name"], "kind": a["kind"],
+                           "balance_cents": a["value_cents"]})
+    for i in items:
+        (assets if i["side"] == "asset" else liabs).append(
+            {"source": "item", **i, "balance_cents": i["value_cents"] if i["active"] else 0,
+             "label": (ASSET_CATS if i["side"] == "asset" else LIAB_CATS).get(i["category"], i["category"])})
+    # change vs. the closest snapshot on/before each lookback date
+    snaps = rows(con, "SELECT * FROM networth_snapshots ORDER BY date")
+    t = today()
+    changes = {}
+    for label, d in (("30d", 30), ("90d", 90), ("1y", 365)):
+        cut = (t - timedelta(days=d)).isoformat()
+        prior = [r for r in snaps if r["date"] <= cut]
+        if prior:
+            changes[label] = tot["net_cents"] - _nw_totals(prior[-1], perms)["net_cents"]
+    if snaps:
+        changes["all"] = tot["net_cents"] - _nw_totals(snaps[0], perms)["net_cents"]
+    by_type = {k: v for k, v in parts.items() if k != "investments_cents" or "investments:read" in perms}
+    return {**tot, "parts": by_type, "assets": assets, "liabilities": liabs, "changes": changes,
+            "first_snapshot": snaps[0]["date"] if snaps else None,
+            "asset_categories": ASSET_CATS, "liability_categories": LIAB_CATS}

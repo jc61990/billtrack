@@ -194,6 +194,7 @@ def check_once() -> None:
         account_alerts(con)
         ledger.snapshot_investments(con)
         ledger.snapshot_accounts(con)
+        ledger.snapshot_networth(con)
 
         # Housekeeping
         n = now_utc()

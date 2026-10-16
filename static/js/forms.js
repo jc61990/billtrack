@@ -202,3 +202,28 @@ export function reminderForm(r = {}, presetDate) {
     return r.id ? api("PUT", `/api/reminders/${r.id}`, body) : api("POST", "/api/reminders", body);
   }, r.id ? () => api("DELETE", `/api/reminders/${r.id}`) : null);
 }
+
+export const NW_ASSET = { property: "Home / property", vehicle: "Vehicle", valuables: "Valuables", retirement: "Pension / retirement (not tracked)",
+  receivable: "Money owed to you", other: "Other asset" };
+export const NW_LIAB = { mortgage: "Mortgage", auto: "Auto loan", student: "Student loan", personal: "Personal loan",
+  medical: "Medical debt", tax: "Taxes owed", other: "Other debt" };
+
+export function nwItemForm(it = {}, side) {
+  const sd = it.side || side || "asset", cats = sd === "asset" ? NW_ASSET : NW_LIAB;
+  openForm(it.id ? `Edit ${it.name}` : sd === "asset" ? "Add an asset" : "Add a debt", [
+    { name: "name", label: "Name", value: it.name, required: true, placeholder: sd === "asset" ? "House" : "Mortgage" },
+    { name: "category", label: "Type", type: "select", options: Object.entries(cats), value: it.category || (sd === "asset" ? "property" : "mortgage"), pair: 1 },
+    { name: "value_cents", label: sd === "asset" ? "Current value" : "Amount owed", type: "money", zero: 1, value: it.value_cents ?? 0, pair: 1,
+      hint: sd === "asset" ? "Your best estimate. Update it now and then." : "" },
+    { name: "notes", label: "Notes", type: "textarea", value: it.notes },
+    { name: "active", label: "Count toward net worth", type: "check", value: it.id ? it.active : true },
+  ], (d) => { const body = { ...d, side: sd }; return it.id ? api("PUT", `/api/networth/items/${it.id}`, body) : api("POST", "/api/networth/items", body); },
+  it.id ? () => api("DELETE", `/api/networth/items/${it.id}`) : null);
+}
+
+export function nwValueForm(it) {
+  openForm(`Update ${it.name}`, [
+    { name: "value_cents", label: it.side === "asset" ? "Value now" : "Owed now", type: "money", zero: 1, required: true, value: it.value_cents },
+  ], (d) => api("PUT", `/api/networth/items/${it.id}`, { name: it.name, side: it.side, category: it.category,
+    value_cents: d.value_cents, notes: it.notes, active: !!it.active }), null, "Update");
+}

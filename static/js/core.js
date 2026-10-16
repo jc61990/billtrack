@@ -174,12 +174,13 @@ export function openForm(title, fields, onSave, onDelete, saveLabel = "Save") {
 }
 
 // ---------- context menu (right-click, long-press, keyboard menu key) ----------
-let menuEl = null;
+let menuEl = null, menuAt = 0;
 export function closeMenu() { menuEl?.remove(); menuEl = null; }
 export function showMenu(x, y, items) {
   closeMenu();
   items = items.filter(Boolean);
   if (!items.length) return;
+  menuAt = performance.now();
   menuEl = el("div", { class: "ctx", role: "menu" }, items.map((it) => it === "-" ? el("hr") :
     el("button", { type: "button", role: "menuitem", class: it.danger ? "danger" : "", disabled: it.disabled,
       onclick: () => { closeMenu(); it.action(); } }, it.label)));
@@ -197,7 +198,8 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "ArrowDown") { e.preventDefault(); btns[(i + 1) % btns.length]?.focus(); }
   else if (e.key === "ArrowUp") { e.preventDefault(); btns[(i - 1 + btns.length) % btns.length]?.focus(); }
 });
-addEventListener("scroll", closeMenu, true);
+// Close on scroll, but ignore the scroll that often lands right after opening (scroll-into-view, momentum)
+addEventListener("scroll", () => { if (performance.now() - menuAt > 250) closeMenu(); }, true);
 addEventListener("resize", closeMenu);
 
 /** Right-click / menu key on desktop; long-press (when not dragging) on touch. */

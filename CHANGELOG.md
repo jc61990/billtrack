@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.5.0 - 2026-10-16
+### Added
+- **Net worth** section: current net worth with 30-day / 90-day / 1-year / since-start change, history chart
+  (net worth, assets, debts; 3M/6M/1Y/5Y/All), assets-vs-debts composition bar, and full asset and debt lists.
+- Manual assets and debts (`/api/networth/items`): home, vehicle, valuables, untracked pension, money owed to you;
+  mortgage, auto/student/personal loans, medical debt, taxes owed. Can be excluded without deleting.
+- Daily net worth snapshots (`networth_snapshots`), also refreshed whenever a balance, holding, price or item
+  changes. `GET /api/networth`, `GET /api/networth/history`.
+### Changed
+- Overview's net worth now uses the same calculation (includes manual assets/debts and loan accounts).
+- Net worth respects permissions: users without investment access get a figure without investments.
+- Charts size themselves to the screen so labels stay readable on phones.
+### Fixed
+- Right-click menu could close immediately when the page scrolled right as it opened.
+
 ## 2.4.0 - 2026-10-16
 ### Added
 - **Accounts** section (bottom-bar tab on phones): checking/savings with balance, 90-day sparkline, last updated,

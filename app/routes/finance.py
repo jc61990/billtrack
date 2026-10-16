@@ -82,6 +82,7 @@ def _acct_stamp(con, row, item_id):
 
 def _acct_after(con, row):
     ledger.record_balance(con, row["id"], row["balance_cents"])
+    ledger.snapshot_networth(con)
     notify.account_alerts(con)
 
 
@@ -112,9 +113,47 @@ def update_balance(aid: int, body: BalanceIn, request: Request, p: Principal = D
         if not n:
             raise HTTPException(404, "Not found")
         ledger.record_balance(con, aid, body.balance_cents)
+        ledger.snapshot_networth(con)
         audit(con, request, "balance updated", f"account {aid}")
         notify.account_alerts(con)
     return {"ok": True}
+
+
+# ---------- net worth ----------
+class NetWorthItemIn(In):
+    name: Name
+    side: Literal["asset", "liability"]
+    category: Literal["property", "vehicle", "valuables", "retirement", "receivable", "mortgage", "auto", "student",
+                      "personal", "medical", "tax", "other"] = "other"
+    value_cents: Cents = 0
+    notes: Note = ""
+    active: bool = True
+
+
+def _nw_stamp(con, row, item_id):
+    asset_cats = set(ledger.ASSET_CATS)
+    if (row["side"] == "asset") != (row["category"] in asset_cats) and row["category"] != "other":
+        raise HTTPException(422, "Category doesn't match asset/liability")
+    old = con.execute("SELECT value_cents FROM networth_items WHERE id=?", (item_id,)).fetchone() if item_id else None
+    if not old or old["value_cents"] != row["value_cents"]:
+        row["value_updated"] = iso(now_utc())
+
+
+crud(r, "networth/items", "networth_items", NetWorthItemIn, R, W, order="side, value_cents DESC",
+     before_save=_nw_stamp, after_save=lambda con, row: ledger.snapshot_networth(con))
+
+
+@r.get("/networth")
+def networth(p: Principal = Depends(require(R))):
+    with db.tx() as con:
+        ledger.snapshot_networth(con)   # keep today's point current (and start history on first look)
+        return ledger.networth(con, p.perms)
+
+
+@r.get("/networth/history")
+def networth_history(days: Annotated[int, Query(ge=7, le=3650)] = 365, p: Principal = Depends(require(R))):
+    with db.tx() as con:
+        return ledger.networth_history(con, days, p.perms)
 
 
 @r.get("/accounts/overview")

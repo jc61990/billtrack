@@ -88,9 +88,10 @@ def _price_stamp(con, row, item_id):
     row["price_updated"] = iso(now_utc())
 
 
-crud(r, "investments/accounts", "inv_accounts", InvAccountIn, "investments:read", "investments:write")
+crud(r, "investments/accounts", "inv_accounts", InvAccountIn, "investments:read", "investments:write",
+     after_save=lambda con, row: ledger.snapshot_networth(con))
 crud(r, "investments/holdings", "holdings", HoldingIn, "investments:read", "investments:write",
-     order="symbol", before_save=_price_stamp)
+     order="symbol", before_save=_price_stamp, after_save=lambda con, row: ledger.snapshot_networth(con))
 
 
 @r.get("/investments")
@@ -124,5 +125,6 @@ def update_prices(body: PricesIn, request: Request, p: Principal = Depends(requi
             n += con.execute("UPDATE holdings SET price_cents=?, price_updated=? WHERE upper(symbol)=?",
                              (x.price_cents, iso(now_utc()), x.symbol.upper().strip())).rowcount
         ledger.snapshot_investments(con)
+        ledger.snapshot_networth(con)
         audit(con, request, "update prices", f"{len(body.prices)} symbols", f"{n} holdings")
     return {"updated_holdings": n}
