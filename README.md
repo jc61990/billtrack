@@ -4,12 +4,13 @@ Self-hosted bill, paycheck, savings and investment tracker built around the **we
 roles, two-factor sign-in, alerts by email and phone push, and encryption at every layer: the database on disk,
 secrets inside it, and every byte of browser traffic.
 
-![version](https://img.shields.io/badge/version-2.5.5-blue)
+![version](https://img.shields.io/badge/version-2.6.0-blue)
 
 ## Features
 
 | Area | What it does |
 |---|---|
+| Home | The landing page. **Needs attention** (overdue bills, low or soon-low balances, card payments due, cards over your utilization alert, unread alerts) or "All caught up", then cards for this week (in / out / left over, still to pay, next payday), the next 14 days of bills, accounts and credit utilization, net worth with 30-day change and 90-day sparkline, trackers, investments and this week's reminders. Quick-add buttons for bills, overtime, spending and reminders. Each card opens its section. One request, sections shown only if you have permission. |
 | Week | Money in / out / left over, day-by-day register with running balance, per-account totals, 12-week chart. Tick bills paid and paychecks received. |
 | Calendar | Every bill, payday, OT entry, expense and your ⏰ reminders on its day. Money going out is colored by the account it comes out of (grey = no account, legend under the calendar); money in is green; overdue bills get a red outline and "!". **Drag** to reschedule one occurrence (mouse, or long-press then drag on a phone). **Right-click / long-press** for paid, partial amount, move, skip, reset, edit, duplicate, delete, remind me. Right-click an empty day to add things there. |
 | Accounts | **Checking and savings** with balance, 90-day sparkline, and a projected balance at the end of the pay week after scheduled bills and pay. **Credit cards** with balance vs limit, a **utilization bar** (green under 30%, amber 30-49%, red 50%+ or past your alert), your alert threshold marked on the bar, available credit, APR, due date and minimum payment. Overall utilization across all cards. Quick "Update balance" (button, right-click or API). |
@@ -175,7 +176,7 @@ Bearer requests use plain JSON over TLS (scripts can't do the browser channel) a
 scope and its owner's permissions. Full schema: `GET /api/openapi.json` with the token.
 
 Update a balance from a script: `POST /api/accounts/{id}/balance` with `{"balance_cents": 254000}` (write token).
-Account and card summary: `GET /api/accounts/overview`. Net worth: `GET /api/networth`, history
+Everything at a glance: `GET /api/home`. Account and card summary: `GET /api/accounts/overview`. Net worth: `GET /api/networth`, history
 `GET /api/networth/history?days=365`, manual assets/debts `/api/networth/items`.
 
 Main endpoints: `/api/week`, `/api/summary`, `/api/trend`, `/api/reports/overview`, `/api/bills`,
@@ -198,7 +199,7 @@ pip install -r requirements.txt pytest httpx
 export BT_DB_KEY=$(python -c 'import secrets;print(secrets.token_hex(32))') BT_COOKIE_SECURE=false
 python -m app.manage adduser dev admin
 uvicorn app.main:app --reload --port 8080
-python -m pytest -q        # 28 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
+python -m pytest -q        # 29 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
 pip-audit -r requirements.txt
 ```
 

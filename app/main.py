@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 import secrets
 
 from . import __version__, channel, config, crypto, db, ledger, notify, settings
-from .routes import admin, auth, finance, me, trackers
+from .routes import admin, auth, finance, home, me, trackers
 from .security import Principal, Throttle, client_ip, require
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -101,7 +101,7 @@ async def key_error(_req, exc):
     return JSONResponse({"detail": "Server storage error"}, 500)
 
 
-for router in (auth.r, me.r, finance.r, trackers.r, admin.r):
+for router in (auth.r, me.r, home.r, finance.r, trackers.r, admin.r):
     api.include_router(router)
 
 

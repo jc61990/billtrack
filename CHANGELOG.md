@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.6.0 - 2026-10-16
+### Added
+- **Home page** (new default landing page instead of Week):
+  - Greeting, date and quick-add buttons (bill, overtime, spending, reminder).
+  - **Needs attention:** overdue bills, balances below (or heading below) your alert this week, card payments due
+    within 7 days, cards over their utilization alert, latest unread alerts. Shows "All caught up" when clear.
+  - Cards: this week (in/out/left over, still to pay, OT hours, next payday), coming up in the next 14 days
+    (account color, autopay tag, total), accounts (cash, projected end-of-week, overall card utilization bar), net
+    worth (30-day change, 90-day sparkline), trackers, investments, reminders this week. Each card opens its section.
+  - `GET /api/home`: one request; sections are included only if the user has permission for them.
+- Phone bottom bar: Home, Week, Calendar, Accounts, More (Alerts stays on the bell).
+
 ## 2.5.5 - 2026-10-16
 ### Fixed
 - **App could stop responding** (reported after fast clicking back through the calendar). Hardening for the

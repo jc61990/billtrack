@@ -1,6 +1,7 @@
 import { $, api, can, el, refresh, S, setRefresh, setUnauthorizedHandler, showDialog, toast, closeMenu , fill } from "./core.js";
 import { showAuth } from "./auth.js";
 import { bankForm, billForm, cardForm, expenseForm, extraForm, reminderForm, sourceForm, trackerForm } from "./forms.js";
+import * as home from "./views/home.js";
 import * as week from "./views/week.js";
 import * as cal from "./views/calendar.js";
 import * as overview from "./views/overview.js";
@@ -16,12 +17,13 @@ import * as admin from "./views/admin.js";
 
 // [key, module, nav label, required permission, on mobile bottom bar]
 const VIEWS = [
+  ["home", home, "Home", "self", true],
   ["week", week, "Week", "finance:read", true], ["cal", cal, "Calendar", "finance:read", true],
   ["accounts", accounts, "Accounts", "finance:read", true], ["networth", networth, "Net worth", "finance:read"],
   ["overview", overview, "Overview", "finance:read"],
   ["bills", bills, "Bills", "finance:read"],
   ["income", income, "Income", "finance:read"], ["trackers", trackers, "Trackers", "trackers:read"],
-  ["investments", investments, "Investments", "investments:read"], ["alerts", alerts, "Alerts", "self", true],
+  ["investments", investments, "Investments", "investments:read"], ["alerts", alerts, "Alerts", "self"],
   ["settings", settings, "Settings", "self"], ["admin", admin, "Admin", "admin"],
 ];
 const allowed = () => VIEWS.filter((v) => can(v[3]) && (!S.me.mfa_setup_required || v[0] === "settings"));
@@ -86,7 +88,7 @@ async function boot() {
   S.day ||= S.me.today; S.month ||= S.me.today.slice(0, 7);
   $("#auth").hidden = true; $("#app").hidden = false;
   const h = location.hash.slice(1);
-  S.view = VIEWS.some((v) => v[0] === h) ? h : (S.me.mfa_setup_required ? "settings" : "week");
+  S.view = VIEWS.some((v) => v[0] === h) ? h : (S.me.mfa_setup_required ? "settings" : "home");
   go(S.view);
 }
 

@@ -280,3 +280,36 @@ dialog h3 { margin: 0 0 1rem; font-size: 1.1rem; }
 .acct-legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
 .acct-legend i.none { background: var(--ink-2); }
 .acct-legend i.inc { background: var(--in); }
+
+/* ---------- home ---------- */
+.hello { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; flex-wrap: wrap; margin: 0.2rem 0 0.9rem; }
+.hello h2 { margin: 0; font-size: 1.35rem; }
+.quick { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.quick button { min-height: 36px; font-size: 0.88rem; }
+.hgrid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); align-items: start; }
+.hgrid .card { margin: 0; }
+.hcard h2 { margin: 0 0 0.5rem; }
+.hcard .link { text-decoration: none; font-size: 0.85rem; }
+.trio { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; margin: 0.5rem 0; }
+.trio.two { grid-template-columns: repeat(2, 1fr); }
+.trio small { display: block; color: var(--ink-2); font-size: 0.78rem; }
+.trio strong { font-size: clamp(1rem, 4vw, 1.25rem); font-variant-numeric: tabular-nums; }
+.hcard .big { font-size: 1.8rem; font-weight: 750; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.hspark { width: 140px; height: 44px; flex: none; }
+.up-list { list-style: none; padding: 0; margin: 0; }
+.up-list li { display: grid; grid-template-columns: 6.5rem 1fr auto; gap: 0.5rem; align-items: center; padding: 0.35rem 0;
+  border-bottom: 1px solid var(--rule); font-size: 0.9rem; }
+.up-list li:last-child { border-bottom: 0; }
+.up-list .d { color: var(--ink-2); font-size: 0.82rem; }
+.up-list .n { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attn h2 { margin: 0 0 0.4rem; }
+.attn-list { list-style: none; padding: 0; margin: 0; }
+.attn-list li { padding: 0.45rem 0.6rem; border-radius: 8px; margin-bottom: 0.3rem; }
+.attn-list li.bad { background: color-mix(in srgb, var(--out) 14%, var(--sheet)); box-shadow: inset 3px 0 0 var(--out); }
+.attn-list li.warn { background: color-mix(in srgb, var(--warn) 14%, var(--sheet)); box-shadow: inset 3px 0 0 var(--warn); }
+.attn-list li.info { background: var(--paper); box-shadow: inset 3px 0 0 var(--focus); }
+.ok-strip { color: var(--in); font-weight: 600; }
+@media (max-width: 560px) { .up-list li { grid-template-columns: 5rem 1fr auto; } }
+.attn-list .row { width: 100%; }
+.attn-list .row .amt { color: var(--ink-2); font-size: 0.85rem; margin-left: 0.8rem; }
+@media (max-width: 560px) { .up-list .tag { display: none; } }

@@ -387,3 +387,19 @@ def test_end_date_mistake_fixed(admin):
     assert got == {"OldA": None, "OldB": None, "Once": "2026-10-01", "Loan": "2027-03-01"}
     s = admin.get("/api/summary?start=2026-11-01&end=2026-11-30").json()
     assert {"OldA", "OldB"} <= {b["name"] for b in s["bills"]}
+
+
+def test_home_page(admin):
+    t = ledger.today()
+    admin.post("/api/bills", json={"name": "HomeBill", "amount_cents": 5000, "start_date": (t + timedelta(days=2)).isoformat()}, headers=H)
+    admin.post("/api/bills", json={"name": "LateBill", "amount_cents": 7000, "start_date": (t - timedelta(days=3)).isoformat(),
+                                   "recurrence": "once"}, headers=H)
+    h = admin.get("/api/home").json()
+    assert {"week", "upcoming", "overdue", "accounts", "networth", "trackers", "investments", "reminders"} <= set(h)
+    assert any(b["name"] == "HomeBill" for b in h["upcoming"]) and any(b["name"] == "LateBill" for b in h["overdue"])
+    mkuser("v7", "viewer")
+    v = login("v7")
+    uid = [u for u in admin.get("/api/admin/users").json() if u["username"] == "v7"][0]["id"]
+    admin.put(f"/api/admin/users/{uid}", json={"role": "viewer", "perms_deny": ["investments:read", "trackers:read"]}, headers=H)
+    hv = v.get("/api/home").json()
+    assert "investments" not in hv and "trackers" not in hv and "week" in hv
