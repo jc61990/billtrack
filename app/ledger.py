@@ -67,6 +67,7 @@ def bill_occurrences(con, lo: date, hi: date, include_skipped=False):
                 "account_id": b["account_id"], "account": b["account"], "account_color": b["account_color"],
                 "category": b["category"] or "Uncategorized", "autopay": bool(b["autopay"]), "status": status,
                 "payment_id": p["id"] if p else None, "paid_on": p["paid_on"] if p else None,
+                "paid_source": p.get("source") if p else None,
                 "remind_days": b["remind_days"]})
     return sorted(out, key=lambda x: (x["date"], x["name"].lower()))
 
@@ -91,6 +92,7 @@ def pay_occurrences(con, lo: date, hi: date, include_skipped=False):
                 "expected_cents": s["amount_cents"],
                 "amount_cents": 0 if skipped else (r["amount_cents"] if r else s["amount_cents"]),
                 "received": bool(r), "received_id": r["id"] if r else None,
+                "received_source": r.get("source") if r else None,
                 "account_id": s["account_id"], "account": s["account"]})
     return sorted(out, key=lambda x: x["date"])
 
@@ -191,8 +193,13 @@ def investments(con):
     tot_v = tot_c = 0
     for a in accts:
         a["holdings"] = by.get(a["id"], [])
-        a["value_cents"] = sum(h["value_cents"] for h in a["holdings"]) + a["cash_cents"]
-        a["cost_cents"] = sum(h["cost_basis_cents"] for h in a["holdings"]) + a["cash_cents"]
+        if a.get("synced_value_cents") is not None:   # linked to the bank: its total is authoritative
+            a["value_cents"] = a["synced_value_cents"]
+            cost = sum(h["cost_basis_cents"] for h in a["holdings"])
+            a["cost_cents"] = cost if cost else a["value_cents"]
+        else:
+            a["value_cents"] = sum(h["value_cents"] for h in a["holdings"]) + a["cash_cents"]
+            a["cost_cents"] = sum(h["cost_basis_cents"] for h in a["holdings"]) + a["cash_cents"]
         a["gain_cents"] = a["value_cents"] - a["cost_cents"]
         tot_v += a["value_cents"]
         tot_c += a["cost_cents"]

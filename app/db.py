@@ -109,6 +109,21 @@ CREATE TABLE IF NOT EXISTS networth_snapshots (
   date TEXT PRIMARY KEY, cash_cents INTEGER NOT NULL, investments_cents INTEGER NOT NULL,
   other_assets_cents INTEGER NOT NULL, cards_cents INTEGER NOT NULL, loans_cents INTEGER NOT NULL,
   other_liabilities_cents INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS plaid_items (
+  id INTEGER PRIMARY KEY, item_id TEXT UNIQUE NOT NULL, access_token_enc TEXT NOT NULL,
+  institution_id TEXT NOT NULL DEFAULT '', institution_name TEXT NOT NULL DEFAULT '', cursor TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'ok', error TEXT NOT NULL DEFAULT '', import_since TEXT NOT NULL,
+  created_at TEXT NOT NULL, last_sync TEXT, created_by INTEGER);
+CREATE TABLE IF NOT EXISTS plaid_accounts (
+  id INTEGER PRIMARY KEY, item_id INTEGER NOT NULL REFERENCES plaid_items(id) ON DELETE CASCADE,
+  account_id TEXT UNIQUE NOT NULL, name TEXT NOT NULL DEFAULT '', official_name TEXT NOT NULL DEFAULT '',
+  mask TEXT NOT NULL DEFAULT '', type TEXT NOT NULL DEFAULT '', subtype TEXT NOT NULL DEFAULT '',
+  map_kind TEXT NOT NULL DEFAULT 'none', map_id INTEGER, current_cents INTEGER, available_cents INTEGER,
+  limit_cents INTEGER, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS plaid_txns (
+  transaction_id TEXT PRIMARY KEY, plaid_account_id INTEGER NOT NULL REFERENCES plaid_accounts(id) ON DELETE CASCADE,
+  date TEXT NOT NULL, name TEXT NOT NULL, amount_cents INTEGER NOT NULL, category TEXT NOT NULL DEFAULT '',
+  outcome TEXT NOT NULL DEFAULT '', expense_id INTEGER, payment_id INTEGER, received_id INTEGER, seen_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_extra_date ON income_extra(date);
 CREATE INDEX IF NOT EXISTS ix_exp_date ON expenses(date);
 CREATE INDEX IF NOT EXISTS ix_audit_ts ON audit_log(ts);
@@ -148,6 +163,11 @@ ADD_COLUMNS = [
     ("accounts", "due_day", "INTEGER"),
     ("accounts", "min_payment_cents", "INTEGER NOT NULL DEFAULT 0"),
     ("accounts", "notes", "TEXT NOT NULL DEFAULT ''"),
+    # v2.7 bank sync
+    ("payments", "source", "TEXT NOT NULL DEFAULT 'manual'"),
+    ("income_received", "source", "TEXT NOT NULL DEFAULT 'manual'"),
+    ("expenses", "source", "TEXT NOT NULL DEFAULT 'manual'"),
+    ("inv_accounts", "synced_value_cents", "INTEGER"),
 ]
 SCHEMA_VERSION = 2
 

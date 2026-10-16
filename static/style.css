@@ -313,3 +313,4 @@ dialog h3 { margin: 0 0 1rem; font-size: 1.1rem; }
 .attn-list .row { width: 100%; }
 .attn-list .row .amt { color: var(--ink-2); font-size: 0.85rem; margin-left: 0.8rem; }
 @media (max-width: 560px) { .up-list .tag { display: none; } }
+.tag.bank { color: var(--in); }

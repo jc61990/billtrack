@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.7.0 - 2026-10-16
+### Added
+- **Bank sync with Plaid** (optional, admin-only setup; free Plaid personal Trial covers up to 10 banks):
+  - Admin → Settings → *Bank sync (Plaid)*: client ID, secret (sealed), environment, sync interval.
+  - Admin → *Bank links*: connect a bank, map each bank account to a BillTrack account / new account / new
+    investment account / ignore, choose the import start date, Sync now, Reconnect, Disconnect.
+  - Sync (every 6 h by default, before alerts run): balances and card limits → accounts; brokerage totals →
+    investment accounts; `/transactions/sync` with cursor → matching charges mark **bills paid**, payroll deposits
+    mark **paychecks received** with the real amount, other debits become **spending** with Plaid categories;
+    transfers and card payoffs skipped; pending waits; removed/modified transactions undo/redo what they created;
+    re-delivered transactions never double count.
+  - "Bank" tag on anything matched or imported automatically. Admins alerted when a bank needs sign-in again.
+- `/connect.html`: the only page that loads Plaid Link, with its own CSP (cdn.plaid.com script/frame) and
+  `Cross-Origin-Opener-Policy: same-origin-allow-popups` for bank OAuth pop-ups. Main app CSP unchanged.
+- Tests against a simulated Plaid (link, mapping, balances, bill/pay matching, transfers, pending, removal,
+  duplicates, sign-in-required, permissions, sealed secrets).
+### Security
+- Plaid called via the standard library only (no new dependency), fixed hosts, verified TLS, 30 s timeouts.
+- Access tokens and Plaid secret AES-GCM sealed; never returned to clients. Bank endpoints refuse API tokens.
+
 ## 2.6.1 - 2026-10-16
 ### Added
 - **Automatic pre-upgrade maintenance** in `setup.sh` (runs before the new code touches the database):

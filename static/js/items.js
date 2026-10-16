@@ -142,6 +142,8 @@ export function itemRow(item) {
     el("div", { class: "body" }, el("span", { class: "name" }, itemName(item)),
       tagMap[item.status] ? el("span", { class: `tag ${item.status}` }, tagMap[item.status]) : null,
       item.moved ? el("span", { class: "tag moved", title: `Usually ${item.orig_date}` }, "Moved") : null,
+      item.paid_source === "bank" || item.received_source === "bank" || item.source === "bank"
+        ? el("span", { class: "tag bank", title: "Matched automatically from your bank" }, "Bank") : null,
       el("div", { class: "meta" }, meta)),
     el("span", { class: `amt ${isIn(item) ? "in" : "out"}` }, (isIn(item) ? "+" : "−") + money(item.amount_cents)),
     el("button", { type: "button", class: "kebab", "aria-label": `Options for ${itemName(item)}`, onclick: (e) => {

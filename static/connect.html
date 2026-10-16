@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>Connect a bank · BillTrack</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+<script type="module" src="/js/connect.js"></script>
+</head>
+<body>
+<div class="auth">
+  <div class="auth-card" id="box">
+    <div class="brand"><img src="/icon.svg" alt="">BillTrack</div>
+    <h1 id="ttl">Connect a bank</h1>
+    <p class="muted" id="msg">Loading…</p>
+    <div id="form" hidden>
+      <label>Import spending and paychecks starting from
+        <input type="date" id="since"></label>
+      <p class="hint">Bills due since then are marked paid automatically when a matching charge is found. Earlier transactions are kept for matching only.</p>
+      <button type="button" class="primary wide" id="go">Continue to Plaid</button>
+    </div>
+    <p class="err" id="err" role="alert"></p>
+    <p><a href="/#admin" class="link" id="back">Back to BillTrack</a></p>
+  </div>
+</div>
+</body>
+</html>

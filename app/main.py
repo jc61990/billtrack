@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 import secrets
 
 from . import __version__, channel, config, crypto, db, ledger, notify, settings
-from .routes import admin, auth, finance, home, me, trackers
+from .routes import admin, auth, finance, home, me, plaid as plaid_routes, trackers
 from .security import Principal, Throttle, client_ip, require
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -86,7 +86,8 @@ async def guard(request: Request, call_next):
     h["Referrer-Policy"] = "no-referrer"
     h["X-Frame-Options"] = "DENY"
     h["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
-    h["Cross-Origin-Opener-Policy"] = "same-origin"
+    if "cross-origin-opener-policy" not in h:
+        h["Cross-Origin-Opener-Policy"] = "same-origin"
     h["Cross-Origin-Resource-Policy"] = "same-origin"
     if config.COOKIE_SECURE:
         h["Strict-Transport-Security"] = "max-age=31536000"
@@ -101,7 +102,7 @@ async def key_error(_req, exc):
     return JSONResponse({"detail": "Server storage error"}, 500)
 
 
-for router in (auth.r, me.r, home.r, finance.r, trackers.r, admin.r):
+for router in (auth.r, me.r, home.r, finance.r, trackers.r, admin.r, plaid_routes.r):
     api.include_router(router)
 
 
@@ -166,6 +167,24 @@ def index():
     html = html.replace("<head>", f'<head>\n<meta name="bt-r" content="{filler}">', 1)
     csp = CSP.replace("script-src 'self'", f"script-src 'self' 'nonce-{n}'")
     return HTMLResponse(html, headers={"Cache-Control": "no-store", "Content-Security-Policy": csp})
+
+
+_CONNECT = (STATIC / "connect.html").read_text()
+# Plaid Link needs its script + iframe from cdn.plaid.com and an OAuth pop-up that can talk back to this window.
+# Only this page gets that; the main app keeps the strict self-only policy.
+CONNECT_CSP = ("default-src 'self'; script-src 'self' 'nonce-{n}' https://cdn.plaid.com; style-src 'self'; "
+               "img-src 'self' data: https://*.plaid.com; connect-src 'self' https://*.plaid.com; "
+               "frame-src https://cdn.plaid.com https://*.plaid.com; object-src 'none'; base-uri 'none'; "
+               "form-action 'self'; frame-ancestors 'none'")
+
+
+@api.get("/connect.html", include_in_schema=False)
+def connect_page():
+    n = secrets.token_urlsafe(18)
+    html = _CONNECT.replace('<script type="module" src="/js/connect.js"></script>',
+                            f'<script type="module" nonce="{n}" src="/js/connect.js"></script>')
+    return HTMLResponse(html, headers={"Cache-Control": "no-store", "Content-Security-Policy": CONNECT_CSP.format(n=n),
+                                       "Cross-Origin-Opener-Policy": "same-origin-allow-popups"})
 
 
 api.mount("/", StaticFiles(directory=STATIC, html=True), name="static")

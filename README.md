@@ -4,7 +4,7 @@ Self-hosted bill, paycheck, savings and investment tracker built around the **we
 roles, two-factor sign-in, alerts by email and phone push, and encryption at every layer: the database on disk,
 secrets inside it, and every byte of browser traffic.
 
-![version](https://img.shields.io/badge/version-2.6.1-blue)
+![version](https://img.shields.io/badge/version-2.7.0-blue)
 
 ## Features
 
@@ -20,6 +20,7 @@ secrets inside it, and every byte of browser traffic.
 | Trackers | Savings goals, debt payoff, custom counters, with "$/week to stay on track" and milestone alerts. |
 | Investments | Accounts and holdings, value / cost / gain, one-year history, bulk price updates (by hand or by API). |
 | Alerts | In-app inbox + email + ntfy push, per user: bill reminders, due today, overdue, weekly summary, tracker milestones, **low bank balance** (now, or projected by end of week), **card utilization over your threshold**, **card payment due within 3 days**, and your own recurring reminders. Each balance alert fires once and re-arms when the condition clears. |
+| Bank sync | Optional **Plaid** link (free personal trial, up to 10 banks): balances update automatically, card purchases and debits become spending, matching charges **mark bills paid**, payroll deposits **mark paychecks received** (actual amount, OT included). Transfers between your own accounts and card payoffs are skipped so nothing is counted twice. Read-only. |
 | Users | Admin / member / viewer roles, per-user permission removals, invites by email, password reset by email. |
 | Admin portal | Users, invites, system settings (SMTP, push, time zone, pay-week start, 2FA policy, session length), audit log, all API tokens, encrypted backup. Hidden from non-admins and refused by the server. |
 | API | Personal tokens (read or read/write, with expiry) for scripts; schema at `/api/openapi.json`. |
@@ -161,6 +162,41 @@ sudo systemctl stop billtrack && billtrack-manage rekey /etc/billtrack/db.key.ne
 sudo mv /etc/billtrack/db.key.new /etc/billtrack/db.key && sudo systemctl start billtrack
 ```
 
+## Bank sync (Plaid)
+
+1. Sign up at **dashboard.plaid.com** and choose **Personal use**. The free Trial plan allows up to 10 bank
+   connections with real data.
+2. In the Plaid dashboard: Developers → Keys. Copy the **client ID** and the **Production** secret.
+3. BillTrack: **Admin → Settings → Bank sync (Plaid)**, paste both, environment *Production*, save.
+4. **Admin → Bank links → Connect a bank.** Pick the date to import spending from (default: 1st of this month),
+   then sign in to your bank in Plaid's window (Capital One, Citi and Schwab use their own sign-in pages).
+5. For each bank account choose how BillTrack uses it: an existing account, **＋ New BillTrack account**,
+   **＋ New investment account** (brokerage/retirement), or *Don't use*.
+
+What syncs (every 6 hours by default, or **Sync now**):
+
+| From the bank | Becomes |
+|---|---|
+| Checking/savings/card/loan balance | The mapped account's balance (card limits too) → low-balance and utilization alerts, net worth, Home |
+| Brokerage/retirement balance | The mapped investment account's total value |
+| A charge that matches an unpaid bill (same account or none, ±5 days of the due date, amount within 2% or $1) | Bill **marked paid** with the actual amount and date, tagged *Bank* |
+| A payroll deposit near a payday (±3 days, 60%-175% of the usual take-home) | Paycheck **marked received** with the real amount |
+| Any other purchase/debit | **Spending** with Plaid's category (Food & Drink, Rent & Utilities, …), tagged *Bank* |
+| Transfers between your accounts, credit-card payments, other deposits | Skipped (no double counting) |
+| Pending transactions | Wait until they post |
+| A transaction the bank later removes | What it created is removed too |
+
+If a bank asks you to sign in again, the link shows **Sign-in needed**, admins get an alert, and **Reconnect**
+fixes it without losing anything. **Disconnect** revokes Plaid's access and deletes the tokens; imported spending
+stays. Some banks need extra steps in the Plaid dashboard the first time (their OAuth checklist); Plaid's
+error message says so.
+
+Security: read-only (Transactions product only); only `production.plaid.com` / `sandbox.plaid.com` are contacted,
+over verified TLS, with no extra Python dependency; access tokens and the Plaid secret are AES-GCM sealed in the
+encrypted database and never sent to browsers; only admins can link banks (never via API tokens); every link,
+mapping, sync and unlink is in the audit log. Plaid's Link script loads **only** on `/connect.html`, which has its
+own content-security policy allowing `cdn.plaid.com`; the rest of the app still allows no third-party code.
+
 ## Alerts
 - **Email:** Admin → Settings → Email. TLS is mandatory and certificates are verified. Gmail: `smtp.gmail.com`,
   587, STARTTLS, App Password. Each user sets their address in Settings.
@@ -202,7 +238,7 @@ pip install -r requirements.txt pytest httpx
 export BT_DB_KEY=$(python -c 'import secrets;print(secrets.token_hex(32))') BT_COOKIE_SECURE=false
 python -m app.manage adduser dev admin
 uvicorn app.main:app --reload --port 8080
-python -m pytest -q        # 30 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
+python -m pytest -q        # 33 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
 pip-audit -r requirements.txt
 ```
 

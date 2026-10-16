@@ -1,17 +1,18 @@
-import { api, closeDialog, confirmBox, el, fmtTs, onContext, openForm, refresh, S, showDialog, toast , fill } from "../core.js";
+import { api, closeDialog, confirmBox, el, fmtTs, money, onContext, openForm, refresh, S, showDialog, toast, fill } from "../core.js";
 
 export const title = "Admin";
 let tab = "users", auditQ = "";
-const TABS = [["users", "Users"], ["invites", "Invites"], ["settings", "Settings"], ["audit", "Audit log"], ["tokens", "API tokens"], ["system", "Backup & system"]];
+const TABS = [["users", "Users"], ["invites", "Invites"], ["banks", "Bank links"], ["settings", "Settings"], ["audit", "Audit log"], ["tokens", "API tokens"], ["system", "Backup & system"]];
 const PERM_LABEL = { "finance:write": "Edit bills & income", "trackers:read": "See trackers", "trackers:write": "Edit trackers",
   "investments:read": "See investments", "investments:write": "Edit investments", reminders: "Use reminders" };
 const ROLE_HELP = { admin: "Everything, including this portal", member: "Use and edit everything except admin", viewer: "Look but not change" };
 
 export async function render(root) {
+  try { const t = sessionStorage.getItem("bt-admin-tab"); if (t) { tab = t; sessionStorage.removeItem("bt-admin-tab"); } } catch { /* ignore */ }
   const body = el("div");
   fill(root, el("div", { class: "seg", role: "tablist" }, TABS.map(([k, l]) =>
     el("button", { type: "button", role: "tab", "aria-selected": String(tab === k), onclick: () => { tab = k; render(root); } }, l))), body);
-  await ({ users, invites, settings, audit, tokens, system })[tab](body);
+  await ({ users, invites, banks, settings, audit, tokens, system })[tab](body);
 }
 
 // ---------- users ----------
@@ -128,6 +129,73 @@ function inviteForm() {
   }, null, "Create invite");
 }
 
+// ---------- bank links (Plaid) ----------
+const STATUS = { ok: ["Connected", ""], login_required: ["Sign-in needed", "overdue"], error: ["Sync error", "due-soon"] };
+async function banks(root) {
+  const [st, accts, invs] = await Promise.all([api("GET", "/api/plaid/status"), api("GET", "/api/accounts"), api("GET", "/api/investments/accounts")]);
+  if (!st.configured) {
+    fill(root, el("section", { class: "card" }, el("h2", {}, "Connect your banks with Plaid"),
+      el("ol", {}, el("li", {}, "Go to dashboard.plaid.com and sign up. Choose \"Personal use\" (free trial, up to 10 bank connections)."),
+        el("li", {}, "In the Plaid dashboard open Developers → Keys and copy the client ID and the Production secret."),
+        el("li", {}, "Paste them in the Settings tab here under Bank sync (Plaid), then come back to this tab.")),
+      el("button", { type: "button", class: "primary", onclick: () => { tab = "settings"; refresh(); } }, "Open Settings")));
+    return;
+  }
+  const opts = (pa) => {
+    const isInv = pa.type === "investment" || pa.type === "brokerage";
+    const cur = pa.map_kind === "none" ? "none" : `${pa.map_kind}:${pa.map_id}`;
+    const list = [["none", "Don't use"]];
+    if (isInv) { list.push(["investment:new", "＋ New investment account"]); invs.forEach((a) => list.push([`investment:${a.id}`, `Investment: ${a.name}`])); }
+    else { list.push(["account:new", "＋ New BillTrack account"]); accts.forEach((a) => list.push([`account:${a.id}`, `${a.name} (${a.kind})`])); }
+    const sel = el("select", { "aria-label": `Use ${pa.name} as` }, list.map(([v, l]) => el("option", { value: v, selected: v === cur }, l)));
+    sel.addEventListener("change", async () => {
+      const [kind, id] = sel.value.split(":");
+      try {
+        await api("PUT", `/api/plaid/accounts/${pa.id}`, { map_kind: kind, map_id: id && id !== "new" ? Number(id) : null, create: id === "new" });
+        toast("Saved"); refresh();
+      } catch (e) { toast(e.message, true); refresh(); }
+    });
+    return sel;
+  };
+  const items = st.items.map((it) => {
+    const [label, cls] = STATUS[it.status] || [it.status, ""];
+    const since = el("input", { type: "date", value: it.import_since });
+    since.addEventListener("change", () => api("PUT", `/api/plaid/items/${it.id}`, { import_since: since.value }).then(() => toast("Saved")).catch((e) => toast(e.message, true)));
+    return el("section", { class: "card" },
+      el("div", { class: "spread" }, el("h2", {}, it.institution_name, el("span", { class: `tag ${cls}` }, label)),
+        el("span", { class: "muted small" }, `Last sync ${fmtTs(it.last_sync)}`)),
+      it.error ? el("p", { class: it.status === "login_required" ? "out" : "muted small" },
+        it.status === "login_required" ? "Your bank needs you to sign in again. Click Reconnect." : it.error) : null,
+      el("div", { class: "scroll-x" }, el("table", { class: "tbl" },
+        el("tr", {}, el("th", {}, "Bank account"), el("th", { class: "r" }, "Balance"), el("th", {}, "Use in BillTrack as"), el("th", {}, "Imported")),
+        it.accounts.map((pa) => el("tr", {},
+          el("td", {}, pa.name, el("div", { class: "meta" }, [pa.subtype || pa.type, pa.mask ? `••${pa.mask}` : ""].filter(Boolean).join(" · "))),
+          el("td", { class: "r" }, pa.current_cents === null ? "—" : money(pa.current_cents)),
+          el("td", {}, opts(pa)),
+          el("td", { class: "small" }, pa.stats?.n ? `${pa.stats.expenses || 0} spending · ${pa.stats.bills || 0} bills paid · ${pa.stats.pays || 0} paychecks` : "—"))))),
+      el("label", {}, "Import spending and paychecks from", since),
+      el("div", { class: "actions left" },
+        el("button", { type: "button", class: "primary", onclick: async (e) => {
+          e.currentTarget.disabled = true;
+          try { const r = await api("POST", `/api/plaid/sync?item=${it.id}`); const s = Object.values(r)[0] || {};
+            toast(s.error ? `Sync problem: ${s.error}` : `Synced: ${s.added || 0} new, ${s.bills_paid || 0} bills paid, ${s.pay_received || 0} paychecks`, !!s.error);
+          } catch (x) { toast(x.message, true); }
+          refresh();
+        } }, "Sync now"),
+        el("button", { type: "button", onclick: () => { location.href = `/connect.html?item=${it.id}`; } }, "Reconnect"),
+        el("button", { type: "button", class: "danger", onclick: async () => {
+          if (await confirmBox(`Disconnect ${it.institution_name}?`, "Plaid access is revoked and the tokens are deleted. Spending already imported stays.", "Disconnect")) {
+            api("DELETE", `/api/plaid/items/${it.id}`).then(() => { toast("Disconnected"); refresh(); }).catch((x) => toast(x.message, true));
+          }
+        } }, "Disconnect")));
+  });
+  fill(root,
+    el("div", { class: "spread" }, el("p", { class: "muted" }, `Plaid ${st.env}. Balances and transactions sync automatically; matching charges mark bills paid and deposits mark paychecks received.`),
+      el("button", { type: "button", class: "primary", onclick: () => { location.href = "/connect.html"; } }, "Connect a bank")),
+    items.length ? items : el("div", { class: "empty-state" }, el("p", {}, "No banks connected yet.")),
+    el("p", { class: "hint" }, "Read-only. Your bank password goes to your bank (or Plaid), never to BillTrack. Access tokens are stored encrypted."));
+}
+
 // ---------- system settings ----------
 async function settings(root) {
   const s = await api("GET", "/api/admin/settings");
@@ -157,6 +225,12 @@ async function settings(root) {
       f("smtp_user", "Username"), f("smtp_pass", "Password", "password", { placeholder: s.smtp_pass_set ? "•••••••• (saved, leave blank to keep)" : "",
         hint: "Stored encrypted. Never shown again." }),
       f("smtp_from", "From address", "email")),
+    el("fieldset", {}, el("legend", {}, "Bank sync (Plaid)"),
+      el("p", { class: "hint" }, "Free personal-use keys: dashboard.plaid.com → sign up → Personal use → Developers → Keys."),
+      f("plaid_client_id", "Client ID", "text", { autocomplete: "off" }),
+      f("plaid_secret", "Secret", "password", { placeholder: s.plaid_secret_set ? "•••••••• (saved, leave blank to keep)" : "", hint: "Stored encrypted. Never shown again." }),
+      el("div", { class: "row2" }, sel("plaid_env", "Environment", [["production", "Production (real banks)"], ["sandbox", "Sandbox (test data)"]]),
+        f("plaid_sync_hours", "Sync every (hours)", "number", { min: 1, max: 24 }))),
     el("fieldset", {}, el("legend", {}, "Phone push (ntfy)"),
       f("ntfy_server", "ntfy server", "url"), f("ntfy_token", "Access token (self-hosted ntfy)", "password",
         { placeholder: s.ntfy_token_set ? "•••••••• (saved, leave blank to keep)" : "" })),
@@ -170,6 +244,7 @@ async function settings(root) {
       if (!n.name) continue;
       if (n.type === "checkbox") v[n.name] = n.checked;
       else if (n.type === "number" || n.name.endsWith("weekday") || n.name === "week_start") v[n.name] = Number(n.value);
+      else if (n.name === "plaid_env") v[n.name] = n.value;
       else if (n.type === "password") { if (n.value) v[n.name] = n.value; }
       else v[n.name] = n.value.trim();
     }
@@ -177,7 +252,8 @@ async function settings(root) {
   };
   fill(root, form, s.smtp_pass_set || s.ntfy_token_set ? el("div", { class: "actions left" },
     s.smtp_pass_set ? el("button", { type: "button", class: "danger", onclick: () => api("PUT", "/api/admin/settings", { smtp_pass: "" }).then(refresh) }, "Clear saved SMTP password") : null,
-    s.ntfy_token_set ? el("button", { type: "button", class: "danger", onclick: () => api("PUT", "/api/admin/settings", { ntfy_token: "" }).then(refresh) }, "Clear saved ntfy token") : null) : null);
+    s.ntfy_token_set ? el("button", { type: "button", class: "danger", onclick: () => api("PUT", "/api/admin/settings", { ntfy_token: "" }).then(refresh) }, "Clear saved ntfy token") : null) : null,
+    s.plaid_secret_set ? el("button", { type: "button", class: "danger", onclick: () => api("PUT", "/api/admin/settings", { plaid_secret: "" }).then(refresh) }, "Clear saved Plaid secret") : null);
 }
 
 // ---------- audit ----------

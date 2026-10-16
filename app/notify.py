@@ -294,7 +294,12 @@ def next_reminder(cur: str, rec: str, after: str) -> str | None:
 
 
 async def loop(interval_min: int):
+    from . import plaid
     while True:
+        try:
+            await asyncio.to_thread(plaid.sync_all, True)   # before alerts, so alerts see fresh balances
+        except Exception:
+            log.exception("bank sync failed")
         try:
             await asyncio.to_thread(check_once)
         except Exception:
