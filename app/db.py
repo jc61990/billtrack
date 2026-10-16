@@ -98,6 +98,9 @@ CREATE TABLE IF NOT EXISTS holdings (
 CREATE TABLE IF NOT EXISTS inv_snapshots (
   inv_account_id INTEGER NOT NULL REFERENCES inv_accounts(id) ON DELETE CASCADE, date TEXT NOT NULL,
   value_cents INTEGER NOT NULL, PRIMARY KEY (inv_account_id, date));
+CREATE TABLE IF NOT EXISTS account_history (
+  account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, date TEXT NOT NULL,
+  balance_cents INTEGER NOT NULL, PRIMARY KEY (account_id, date));
 CREATE INDEX IF NOT EXISTS ix_extra_date ON income_extra(date);
 CREATE INDEX IF NOT EXISTS ix_exp_date ON expenses(date);
 CREATE INDEX IF NOT EXISTS ix_audit_ts ON audit_log(ts);
@@ -127,6 +130,16 @@ ADD_COLUMNS = [
     ("accounts", "kind", "TEXT NOT NULL DEFAULT 'checking'"),
     ("accounts", "balance_cents", "INTEGER NOT NULL DEFAULT 0"),
     ("accounts", "balance_updated", "TEXT"),
+    # v2.4 bank accounts + credit cards
+    ("accounts", "institution", "TEXT NOT NULL DEFAULT ''"),
+    ("accounts", "last4", "TEXT NOT NULL DEFAULT ''"),
+    ("accounts", "credit_limit_cents", "INTEGER NOT NULL DEFAULT 0"),
+    ("accounts", "low_balance_cents", "INTEGER NOT NULL DEFAULT 0"),
+    ("accounts", "util_alert_pct", "INTEGER NOT NULL DEFAULT 30"),
+    ("accounts", "apr_bps", "INTEGER NOT NULL DEFAULT 0"),
+    ("accounts", "due_day", "INTEGER"),
+    ("accounts", "min_payment_cents", "INTEGER NOT NULL DEFAULT 0"),
+    ("accounts", "notes", "TEXT NOT NULL DEFAULT ''"),
 ]
 SCHEMA_VERSION = 2
 

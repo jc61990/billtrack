@@ -1,45 +1,107 @@
 #!/usr/bin/env bash
-# BillTrack bare-metal installer for Ubuntu 22.04/24.04. Safe to re-run:
-#   - code in $APP_DIR is replaced from THIS checkout (git is the source of truth)
-#   - env file, database key and database are NEVER overwritten
-#   - a v1.0 plaintext database is encrypted automatically (plaintext copy kept as .plain.bak)
-#   - HTTPS on 443 via nginx with an auto-generated local CA + server certificate (CA kept across re-runs,
-#     server cert re-issued only when it's near expiry or the machine's names/IPs change)
+# BillTrack installer / updater for Ubuntu 22.04/24.04.  Run:  sudo ./setup.sh
 #
-# Options:
-#   --no-proxy            app only on 127.0.0.1:$PORT (bring your own proxy / Tailscale)
-#   --san a,b,c           extra hostnames or IPs to put on the certificate (e.g. bills.lan,10.0.0.5)
-#   --regen-cert          force a new server certificate (CA unchanged, devices stay trusted)
-#   --regen-ca            new CA + server cert (every device must re-trust the new CA)
+# Everything is asked interactively; nothing is passed on the command line. Answers are saved to
+# /etc/billtrack/install.conf, so updates (git pull && sudo ./setup.sh) just ask "keep these settings?".
+# Safe to re-run:
+#   - code in /opt/billtrack is replaced from THIS checkout (git is the source of truth)
+#   - env file, database key, database and certificate authority are NEVER overwritten
+#   - a v1.0 plaintext database is encrypted automatically (plaintext copy kept as .plain.bak)
+#   - HTTPS on 443 via nginx with an auto-generated local CA + server certificate
 set -euo pipefail
 
-PROXY=1; EXTRA_SAN=""; REGEN_CERT=0; REGEN_CA=0
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --no-proxy) PROXY=0 ;;
-    --san) EXTRA_SAN="${2:-}"; shift ;;
-    --san=*) EXTRA_SAN="${1#*=}" ;;
-    --regen-cert) REGEN_CERT=1 ;;
-    --regen-ca) REGEN_CA=1; REGEN_CERT=1 ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
-    *) echo "Unknown option: $1 (see --help)"; exit 1 ;;
-  esac
-  shift
-done
-
-APP_DIR=${APP_DIR:-/opt/billtrack}
-DATA_DIR=${DATA_DIR:-/var/lib/billtrack}
-ENV_FILE=${ENV_FILE:-/etc/billtrack/billtrack.env}
-KEY_FILE=${KEY_FILE:-/etc/billtrack/db.key}
+APP_DIR=/opt/billtrack
+DATA_DIR=/var/lib/billtrack
+CONF_DIR=/etc/billtrack
+ENV_FILE=$CONF_DIR/billtrack.env
+KEY_FILE=$CONF_DIR/db.key
+INSTALL_CONF=$CONF_DIR/install.conf
+TLS_DIR=$CONF_DIR/tls
 DB_FILE="$DATA_DIR/billtrack.db"
-BIND=${BIND:-127.0.0.1}           # app stays on loopback; nginx is the only thing on the network
-TLS_DIR=${TLS_DIR:-/etc/billtrack/tls}
-PORT=${PORT:-8080}
+BIND=127.0.0.1            # app stays on loopback; nginx is the only thing on the network
+PORT=8080
 SVC_USER=billtrack
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 [[ $EUID -eq 0 ]] || { echo "Run with sudo: sudo ./setup.sh"; exit 1; }
 [[ -f "$SRC_DIR/app/main.py" ]] || { echo "Run from the repo root"; exit 1; }
+[[ $# -eq 0 ]] || { echo "setup.sh takes no options - it will ask you what it needs."; exit 1; }
+
+# ---------- prompt helpers (read from the terminal even if stdin is redirected) ----------
+TTY=/dev/tty
+INTERACTIVE=1; [[ -r $TTY && -w $TTY ]] || INTERACTIVE=0
+ask() {   # ask "Question" "default" -> echoes answer
+  local q="$1" def="${2:-}" a=""
+  if [[ $INTERACTIVE == 1 ]]; then
+    if [[ -n "$def" ]]; then printf '%s [%s]: ' "$q" "$def" >$TTY; else printf '%s: ' "$q" >$TTY; fi
+    IFS= read -r a <$TTY || true
+  fi
+  echo "${a:-$def}"
+}
+yesno() { # yesno "Question" Y|N -> exit status 0 for yes
+  local def="$2" a
+  while true; do
+    a=$(ask "$1 $( [[ $def == Y ]] && echo '(Y/n)' || echo '(y/N)')" "")
+    a="${a:-$def}"
+    case "${a,,}" in y|yes) return 0 ;; n|no) return 1 ;; esac
+    echo "  Please answer y or n." >$TTY
+  done
+}
+valid_san() {  # comma list of hostnames / IPv4 / IPv6; nothing else reaches openssl
+  local x IFS=','
+  for x in $1; do
+    x="${x// /}"; [[ -z "$x" ]] && continue
+    [[ "$x" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ || "$x" =~ ^[0-9A-Fa-f:]+$ || \
+       "$x" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?)*$ ]] || return 1
+  done
+}
+
+# ---------- saved answers (parsed, never sourced) ----------
+PROXY=1; EXTRA_SAN=""
+if [[ -f $INSTALL_CONF ]]; then
+  while IFS='=' read -r k v; do
+    case "$k" in
+      PROXY) [[ "$v" =~ ^[01]$ ]] && PROXY=$v ;;
+      EXTRA_SAN) valid_san "$v" && EXTRA_SAN=$v ;;
+    esac
+  done < "$INSTALL_CONF"
+  FIRST_RUN=0
+else
+  FIRST_RUN=1
+fi
+REGEN_CERT=0; REGEN_CA=0
+
+echo
+if [[ $FIRST_RUN == 1 ]]; then
+  echo "BillTrack setup"
+  echo "---------------"
+else
+  echo "BillTrack update - current settings:"
+  echo "  HTTPS on port 443 (nginx + self-signed cert): $( [[ $PROXY == 1 ]] && echo yes || echo 'no (app on 127.0.0.1:8080 only)')"
+  [[ $PROXY == 1 ]] && echo "  Extra certificate names/IPs:                  ${EXTRA_SAN:-none}"
+fi
+if [[ $FIRST_RUN == 1 ]] || ! yesno "Keep these settings?" Y; then
+  if yesno "Serve BillTrack on HTTPS port 443 with nginx and a self-signed certificate? (No = you'll use Tailscale or your own proxy)" Y; then
+    PROXY=1
+    echo "  The certificate automatically covers this machine's hostname, hostname.local, localhost and all its IPs."
+    while true; do
+      A=$(ask "  Any other hostnames or IPs to add, comma separated (blank for none, '-' to clear)" "$EXTRA_SAN")
+      A="${A// /}"; [[ "$A" == "-" ]] && A=""
+      if valid_san "$A"; then EXTRA_SAN=$A; break; fi
+      echo "  That doesn't look like hostnames/IPs. Example: bills.lan,10.0.0.5" >$TTY
+    done
+    if [[ -f $TLS_DIR/ca.crt ]]; then
+      if yesno "  Issue a fresh server certificate now? (devices stay trusted)" N; then REGEN_CERT=1; fi
+      if yesno "  Start over with a NEW certificate authority? (every device must re-trust it)" N; then REGEN_CA=1; REGEN_CERT=1; fi
+    fi
+  else
+    PROXY=0
+  fi
+fi
+[[ $INTERACTIVE == 1 ]] || echo "(no terminal - using saved/default answers)"
+install -d -m 750 "$CONF_DIR"
+( umask 077; printf 'PROXY=%s\nEXTRA_SAN=%s\n' "$PROXY" "$EXTRA_SAN" > "$INSTALL_CONF" )
+echo
 
 echo "==> Packages"
 apt-get update -qq
@@ -86,6 +148,11 @@ fi
 manage() {  # run the admin CLI as the service user with the right env
   sudo -u "$SVC_USER" env BT_DB_PATH="$DB_FILE" BT_DB_KEY_FILE="$KEY_FILE" PYTHONPATH="$APP_DIR/src" \
     "$APP_DIR/.venv/bin/python" -m app.manage "$@"
+}
+
+manage_py() {  # run a python snippet against the app as the service user
+  sudo -u "$SVC_USER" env BT_DB_PATH="$DB_FILE" BT_DB_KEY_FILE="$KEY_FILE" PYTHONPATH="$APP_DIR/src" \
+    "$APP_DIR/.venv/bin/python" -c "$1"
 }
 
 cat > /usr/local/bin/billtrack-manage <<WRAP
@@ -144,8 +211,31 @@ systemctl restart billtrack
 USERS=$(sudo -u "$SVC_USER" env BT_DB_PATH="$DB_FILE" BT_DB_KEY_FILE="$KEY_FILE" "$APP_DIR/.venv/bin/python" -c \
   "import sys;sys.path.insert(0,'$APP_DIR/src');from app import db;db.init();c=db.connect();print(c.execute('select count(*) from users').fetchone()[0])")
 if [[ "$USERS" == "0" ]]; then
-  read -rp "Create the admin login now. Username: " U
-  manage adduser "$U" admin
+  echo
+  echo "==> First-time settings (all changeable later in Admin > Settings)"
+  DEF_TZ=$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo America/Chicago)
+  while true; do
+    TZ_ANS=$(ask "Time zone" "${DEF_TZ:-America/Chicago}")
+    [[ "$TZ_ANS" =~ ^[A-Za-z0-9_+/-]+$ ]] && manage_py "from app import settings; settings.update({'timezone': '$TZ_ANS'})" 2>/dev/null && break
+    echo "  Unknown time zone. Examples: America/Chicago, America/New_York, Europe/London"
+  done
+  while true; do
+    WD=$(ask "Which day does your pay week start? (Mon/Tue/Wed/Thu/Fri/Sat/Sun)" "Mon")
+    case "${WD,,}" in mon*) N=0;; tue*) N=1;; wed*) N=2;; thu*) N=3;; fri*) N=4;; sat*) N=5;; sun*) N=6;; *) N=;; esac
+    [[ -n "$N" ]] && { manage_py "from app import settings; settings.update({'week_start': $N, 'digest_weekday': $N})"; break; }
+    echo "  Type a day, e.g. Fri"
+  done
+  if [[ $INTERACTIVE == 1 ]]; then
+    while true; do
+      U=$(ask "Admin username (letters, numbers, . _ -)" "")
+      [[ "$U" =~ ^[A-Za-z0-9_.-]{3,32}$ ]] && break
+      echo "  3-32 characters: letters, numbers, . _ -"
+    done
+    manage adduser "$U" admin </dev/tty
+  else
+    echo "  No terminal: create the admin later with  sudo billtrack-manage adduser <name> admin"
+  fi
+  systemctl restart billtrack   # pick up the new settings
 fi
 
 # ---------------------------------------------------------------------------------------------------------
@@ -281,7 +371,7 @@ NGINX
 if not settings.get('base_url'):
     settings.update({'base_url': '$URL'}); print('    Public URL set to $URL (change in Admin > Settings)')"
 
-  sleep 1
+  systemctl restart billtrack; sleep 2   # pick up Public URL
   if curl -s --cacert "$TLS_DIR/ca.crt" --resolve "$HOST_S:443:127.0.0.1" "https://$HOST_S/healthz" | grep -q ok; then
     echo "    HTTPS check: OK"
   else
@@ -311,7 +401,7 @@ if [[ $PROXY == 1 ]]; then
          - macOS:       open in Keychain Access (System) > double-click > Trust: Always Trust
          - Linux/Firefox: Firefox has its own store: Settings > Certificates > View > Authorities > Import
     Names on the certificate: $SAN
-    New IP or hostname later?  sudo ./setup.sh --san <name-or-ip>   (devices stay trusted)
+    New IP or hostname later? Re-run sudo ./setup.sh, answer "n" to keep settings, and add it.
 MSG
 fi
 systemctl --no-pager --lines=0 status billtrack || true

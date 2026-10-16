@@ -1,9 +1,10 @@
 import { $, api, can, el, refresh, S, setRefresh, setUnauthorizedHandler, showDialog, toast, closeMenu , fill } from "./core.js";
 import { showAuth } from "./auth.js";
-import { billForm, expenseForm, extraForm, reminderForm, sourceForm, trackerForm } from "./forms.js";
+import { bankForm, billForm, cardForm, expenseForm, extraForm, reminderForm, sourceForm, trackerForm } from "./forms.js";
 import * as week from "./views/week.js";
 import * as cal from "./views/calendar.js";
 import * as overview from "./views/overview.js";
+import * as accounts from "./views/accounts.js";
 import * as bills from "./views/bills.js";
 import * as income from "./views/income.js";
 import * as trackers from "./views/trackers.js";
@@ -15,7 +16,8 @@ import * as admin from "./views/admin.js";
 // [key, module, nav label, required permission, on mobile bottom bar]
 const VIEWS = [
   ["week", week, "Week", "finance:read", true], ["cal", cal, "Calendar", "finance:read", true],
-  ["overview", overview, "Overview", "finance:read", true], ["bills", bills, "Bills", "finance:read"],
+  ["accounts", accounts, "Accounts", "finance:read", true], ["overview", overview, "Overview", "finance:read"],
+  ["bills", bills, "Bills", "finance:read"],
   ["income", income, "Income", "finance:read"], ["trackers", trackers, "Trackers", "trackers:read"],
   ["investments", investments, "Investments", "investments:read"], ["alerts", alerts, "Alerts", "self", true],
   ["settings", settings, "Settings", "self"], ["admin", admin, "Admin", "admin"],
@@ -46,6 +48,7 @@ function addMenu() {
   const items = [
     can("finance:write") && ["Bill", () => billForm()], can("finance:write") && ["Overtime or extra pay", () => extraForm()],
     can("finance:write") && ["Other spending", () => expenseForm()], can("finance:write") && ["Pay (paycheck)", () => sourceForm()],
+    can("finance:write") && ["Bank account", () => bankForm({}, "checking")], can("finance:write") && ["Credit card", () => cardForm()],
     can("trackers:write") && ["Tracker", () => trackerForm()], can("reminders") && ["Reminder", () => reminderForm()],
   ].filter(Boolean);
   showDialog("Add", el("div", { class: "menu" }, items.map(([l, fn]) => el("button", { type: "button", onclick: fn }, l))));

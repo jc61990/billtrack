@@ -230,3 +230,18 @@ dialog h3 { margin: 0 0 1rem; font-size: 1.1rem; }
 #toast.show { opacity: 1; }
 @media (min-width: 900px) { #toast { bottom: 1.5rem; } }
 @media (prefers-reduced-motion: reduce) { #toast { transition: none; } }
+
+/* ---------- accounts / credit utilization ---------- */
+.acct h3 { margin: 0; }
+.acct .big strong { font-size: 1.45rem; font-variant-numeric: tabular-nums; }
+.acct.alert { box-shadow: 0 0 0 2px color-mix(in srgb, var(--out) 55%, transparent); }
+.spark { width: 120px; height: 34px; flex: none; }
+.util { margin: 0.5rem 0 0.3rem; }
+.util-track { position: relative; height: 14px; background: var(--paper); border: 1px solid var(--rule); border-radius: 7px; overflow: visible; }
+.util-fill { display: block; height: 100%; border-radius: 7px; min-width: 2px; }
+.util-fill.good { background: var(--in); } .util-fill.warn { background: var(--warn); } .util-fill.bad { background: var(--out); }
+.util-tick { position: absolute; top: -4px; bottom: -4px; width: 2px; transform: translateX(-1px); border-radius: 1px; }
+.util-tick.alert { background: var(--out); }
+.util-tick.guide { background: var(--ink-2); opacity: 0.5; }
+.util-legend { display: flex; justify-content: space-between; font-size: 0.82rem; margin-top: 0.3rem; }
+.util-legend .good { color: var(--in); } .util-legend .warn { color: var(--warn); } .util-legend .bad { color: var(--out); }

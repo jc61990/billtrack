@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import Field
 
-from .. import db, ledger
+from .. import db, ledger, notify
 from ..security import Principal, audit, iso, now_utc, require
 from .common import Cents, Color, In, Name, Note, Rec, SCents, Short, crud
 
@@ -17,7 +17,17 @@ class AccountIn(In):
     name: Name
     color: Color = "#3b6ea5"
     kind: Literal["checking", "savings", "cash", "credit", "loan", "other"] = "checking"
-    balance_cents: SCents = 0
+    balance_cents: SCents = 0            # cards/loans: amount owed
+    institution: Short = ""
+    # Last four digits only. Full card/account numbers are never accepted or stored.
+    last4: Annotated[str, Field(pattern=r"^(\d{4})?$")] = ""
+    credit_limit_cents: Cents = 0
+    low_balance_cents: Cents = 0          # bank accounts: alert below this (0 = off)
+    util_alert_pct: Annotated[int, Field(ge=0, le=100)] = 30   # cards: alert at/above this % (0 = off)
+    apr_bps: Annotated[int, Field(ge=0, le=10000)] = 0          # 24.99% = 2499
+    due_day: Annotated[int, Field(ge=1, le=31)] | None = None
+    min_payment_cents: Cents = 0
+    notes: Note = ""
 
 
 class BillIn(In):
@@ -65,7 +75,14 @@ class ExpenseIn(In):
 
 
 def _acct_stamp(con, row, item_id):
-    row["balance_updated"] = iso(now_utc())
+    old = con.execute("SELECT balance_cents FROM accounts WHERE id=?", (item_id,)).fetchone() if item_id else None
+    if not old or old["balance_cents"] != row["balance_cents"]:
+        row["balance_updated"] = iso(now_utc())
+
+
+def _acct_after(con, row):
+    ledger.record_balance(con, row["id"], row["balance_cents"])
+    notify.account_alerts(con)
 
 
 def _ot_amount(con, row, item_id):
@@ -79,7 +96,31 @@ def _ot_amount(con, row, item_id):
             raise HTTPException(422, "Enter an amount, or hours with a job that has an hourly rate")
 
 
-crud(r, "accounts", "accounts", AccountIn, R, W, before_save=_acct_stamp)
+crud(r, "accounts", "accounts", AccountIn, R, W, before_save=_acct_stamp, after_save=_acct_after)
+
+
+class BalanceIn(In):
+    balance_cents: SCents
+
+
+@r.post("/accounts/{aid}/balance")
+def update_balance(aid: int, body: BalanceIn, request: Request, p: Principal = Depends(require(W))):
+    """Quick balance update (also what a script would call with an API token)."""
+    with db.tx() as con:
+        n = con.execute("UPDATE accounts SET balance_cents=?, balance_updated=? WHERE id=?",
+                        (body.balance_cents, iso(now_utc()), aid)).rowcount
+        if not n:
+            raise HTTPException(404, "Not found")
+        ledger.record_balance(con, aid, body.balance_cents)
+        audit(con, request, "balance updated", f"account {aid}")
+        notify.account_alerts(con)
+    return {"ok": True}
+
+
+@r.get("/accounts/overview")
+def accounts_overview(p: Principal = Depends(require(R))):
+    with db.tx() as con:
+        return ledger.accounts_view(con)
 crud(r, "bills", "bills", BillIn, R, W)
 crud(r, "income-sources", "income_sources", SourceIn, R, W)
 crud(r, "income-extra", "income_extra", ExtraIn, R, W, order="date DESC", date_col="date", before_save=_ot_amount)

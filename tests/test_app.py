@@ -275,3 +275,47 @@ def test_migrate_v1_plaintext(tmp_path):
     assert db.rows(con, "SELECT kind FROM accounts")[0]["kind"] == "checking"
     assert not con.execute("SELECT 1 FROM sqlite_master WHERE name='notices'").fetchone()
     con.close()
+
+
+def test_bank_accounts_and_cards(admin):
+    with db.tx() as con:
+        con.execute("DELETE FROM alert_log"); con.execute("DELETE FROM notifications")
+    t = ledger.today()
+    chk = admin.post("/api/accounts", json={"name": "Chk", "kind": "checking", "balance_cents": 50000,
+                                            "low_balance_cents": 20000}, headers=H).json()
+    admin.post("/api/bills", json={"name": "BigBill", "amount_cents": 40000, "account_id": chk["id"],
+                                   "start_date": t.isoformat(), "recurrence": "once"}, headers=H)
+    card = admin.post("/api/accounts", json={"name": "Visa", "kind": "credit", "balance_cents": 1000,
+                                             "credit_limit_cents": 100000, "util_alert_pct": 30, "last4": "4417",
+                                             "due_day": t.day, "min_payment_cents": 2500}, headers=H).json()
+    # full card numbers are refused
+    assert admin.post("/api/accounts", json={"name": "x", "kind": "credit", "last4": "4111111111111111"},
+                      headers=H).status_code == 422
+    v = admin.get("/api/accounts/overview").json()
+    b = [a for a in v["banks"] if a["id"] == chk["id"]][0]
+    assert b["projected_cents"] == 10000 and b["projected_low"] and not b["low"]
+    c = [a for a in v["cards"] if a["id"] == card["id"]][0]
+    assert c["utilization"] == 0.01 and c["available_cents"] == 99000 and c["days_to_due"] == 0
+    titles = lambda: [n["body"] for n in admin.get("/api/me/notifications").json()]
+    assert any("Heads up: Chk" in x for x in titles()) and any("Visa payment due" in x for x in titles())
+    # cross the utilization threshold -> one alert, not repeated
+    admin.post(f"/api/accounts/{card['id']}/balance", json={"balance_cents": 45000}, headers=H)
+    admin.post(f"/api/accounts/{card['id']}/balance", json={"balance_cents": 46000}, headers=H)
+    assert sum("45% utilized" in x for x in titles()) == 1 and not any("46% utilized" in x for x in titles())
+    # drop below, then back over -> re-armed
+    admin.post(f"/api/accounts/{card['id']}/balance", json={"balance_cents": 5000}, headers=H)
+    admin.post(f"/api/accounts/{card['id']}/balance", json={"balance_cents": 50000}, headers=H)
+    assert any("50% utilized" in x for x in titles())
+    # low balance now
+    admin.post(f"/api/accounts/{chk['id']}/balance", json={"balance_cents": 15000}, headers=H)
+    assert any("Low balance: Chk" in x for x in titles())
+    hist = [a for a in admin.get("/api/accounts/overview").json()["banks"] if a["id"] == chk["id"]][0]["history"]
+    assert hist[-1]["balance_cents"] == 15000
+    # editing other fields keeps the card's limit etc. (full model round trip)
+    r = admin.put(f"/api/accounts/{card['id']}", json={"name": "Visa 2", "kind": "credit", "balance_cents": 50000,
+                                                       "credit_limit_cents": 100000, "last4": "4417"}, headers=H)
+    assert r.status_code == 200
+    mkuser("v2", "viewer")
+    v2 = login("v2")
+    assert v2.post(f"/api/accounts/{card['id']}/balance", json={"balance_cents": 1}, headers=H).status_code == 403
+    assert v2.get("/api/accounts/overview").status_code == 200

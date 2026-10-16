@@ -1,5 +1,33 @@
 # Changelog
 
+## 2.4.0 - 2026-10-16
+### Added
+- **Accounts** section (bottom-bar tab on phones): checking/savings with balance, 90-day sparkline, last updated,
+  and projected balance at the end of the pay week after scheduled bills and pay.
+- **Credit card tracker:** balance vs limit, utilization bar (green < 30%, amber 30-49%, red >= 50% or over your
+  alert) with your alert threshold and the 30% guideline marked, available credit, APR, due day, minimum payment,
+  bills charged to the card this week, and overall utilization across all cards.
+- **Balance alerts:** low balance, projected low balance by end of week, card utilization at/above threshold,
+  card payment due within 3 days. Fire once, re-arm when cleared; per-user on/off in Settings → Alerts.
+- Daily balance history (`account_history`), quick update `POST /api/accounts/{id}/balance`,
+  summary `GET /api/accounts/overview`. Add menu gains Bank account / Credit card.
+### Security
+- Only the last four digits of an account/card can be stored; anything longer is rejected (422).
+- Account edits always send the full model so editing one field can't silently reset limits or thresholds.
+
+## 2.3.0 - 2026-10-16
+### Changed
+- `setup.sh` is fully interactive: no command-line options or environment overrides. First run asks about the
+  HTTPS proxy, extra certificate names/IPs, time zone, pay-week start and the admin login. Updates show the saved
+  answers and ask "Keep these settings?"; answering no lets you change them, re-issue the certificate or create a
+  new CA.
+- Answers saved to `/etc/billtrack/install.conf` (root-only, parsed as data, never sourced); without a terminal
+  the saved answers are reused.
+- Time zone and pay-week start (also used as the weekly-summary day) are set during the first install.
+### Security
+- Certificate names/IPs are validated against strict hostname/IP patterns before reaching openssl.
+- Service restarts after the installer writes settings so the running app never uses stale cached values.
+
 ## 2.2.0 - 2026-10-16
 ### Added
 - `setup.sh` now serves BillTrack on **HTTPS port 443** via nginx by default. The app stays on `127.0.0.1:8080`.

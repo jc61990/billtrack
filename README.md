@@ -4,7 +4,7 @@ Self-hosted bill, paycheck, savings and investment tracker built around the **we
 roles, two-factor sign-in, alerts by email and phone push, and encryption at every layer: the database on disk,
 secrets inside it, and every byte of browser traffic.
 
-![version](https://img.shields.io/badge/version-2.2.0-blue)
+![version](https://img.shields.io/badge/version-2.4.0-blue)
 
 ## Features
 
@@ -12,11 +12,12 @@ secrets inside it, and every byte of browser traffic.
 |---|---|
 | Week | Money in / out / left over, day-by-day register with running balance, per-account totals, 12-week chart. Tick bills paid and paychecks received. |
 | Calendar | Every bill, payday, OT entry and expense on its day. **Drag** to reschedule one occurrence (mouse, or long-press then drag on a phone). **Right-click / long-press** for paid, partial amount, move, skip, reset, edit, duplicate, delete, remind me. Right-click an empty day to add things there. |
+| Accounts | **Checking and savings** with balance, 90-day sparkline, and a projected balance at the end of the pay week after scheduled bills and pay. **Credit cards** with balance vs limit, a **utilization bar** (green under 30%, amber 30-49%, red 50%+ or past your alert), your alert threshold marked on the bar, available credit, APR, due date and minimum payment. Overall utilization across all cards. Quick "Update balance" (button, right-click or API). |
 | Overview | Any date range by week or month: income vs spending, spending by category, income by type, account balances, net worth, trackers, investments. |
 | Bills & income | Recurring bills with account, autopay, reminder lead time; weekly pay; overtime auto-calculated (hours × rate × multiplier); bonuses; one-off spending. |
 | Trackers | Savings goals, debt payoff, custom counters, with "$/week to stay on track" and milestone alerts. |
 | Investments | Accounts and holdings, value / cost / gain, one-year history, bulk price updates (by hand or by API). |
-| Alerts | In-app inbox + email + ntfy push, per user: bill reminders, due today, overdue, weekly summary, tracker milestones, and your own recurring reminders. |
+| Alerts | In-app inbox + email + ntfy push, per user: bill reminders, due today, overdue, weekly summary, tracker milestones, **low bank balance** (now, or projected by end of week), **card utilization over your threshold**, **card payment due within 3 days**, and your own recurring reminders. Each balance alert fires once and re-arms when the condition clears. |
 | Users | Admin / member / viewer roles, per-user permission removals, invites by email, password reset by email. |
 | Admin portal | Users, invites, system settings (SMTP, push, time zone, pay-week start, 2FA policy, session length), audit log, all API tokens, encrypted backup. Hidden from non-admins and refused by the server. |
 | API | Personal tokens (read or read/write, with expiry) for scripts; schema at `/api/openapi.json`. |
@@ -30,6 +31,7 @@ secrets inside it, and every byte of browser traffic.
 | Page source | Only the empty app shell, regenerated per request with a random CSP nonce and filler, so it's different on every load. No data is ever in the HTML. |
 | Browser storage | None. Data lives only in JS memory while displayed; the service worker caches static files only, never API data. |
 | Database | SQLCipher 4: AES-256 per page + HMAC-SHA512, WAL included, temp tables in memory. Raw 256-bit key from `BT_DB_KEY_FILE`. |
+| Account numbers | Only the last 4 digits are accepted (`^\d{4}$`); full card or account numbers are rejected by the API. BillTrack never connects to a bank. |
 | Secrets in the DB | TOTP seeds, SMTP password, ntfy token additionally sealed with AES-256-GCM (HKDF-derived key). Never returned by the API. |
 | Passwords | Argon2id, 12+ characters, same error for every login failure (no username discovery). |
 | Sign-in | Optional/required TOTP 2FA with one-time recovery codes and replay protection; lockout after 8 failures; per-IP throttling. |
@@ -51,22 +53,27 @@ your data to send alerts and build reports, so this is not zero-knowledge end-to
 ### Ubuntu + systemd (HTTPS on 443 out of the box)
 ```bash
 git clone <your-repo> billtrack && cd billtrack
-sudo ./setup.sh                 # app + nginx on 443 + self-signed certificate + admin login
+sudo ./setup.sh
 ```
-It prints the address (e.g. `https://192.168.1.50`) and how to trust the certificate on your devices.
-Then finish setup in **Admin → Settings** (email, push, time zone, pay-week start).
+There are no command-line options or install variables. The first run asks:
 
-| Option | Use |
-|---|---|
-| `--san bills.lan,10.0.0.5` | Extra hostnames / IPs on the certificate (DNS names you've set up, a second NIC, a VPN IP) |
-| `--regen-cert` | Force a new server certificate. Devices stay trusted (same CA) |
-| `--regen-ca` | New CA + certificate. Every device must re-trust it |
-| `--no-proxy` | Skip nginx; app only on `127.0.0.1:8080` (use with Tailscale or your own proxy) |
+1. Serve on HTTPS port 443 with nginx and a self-signed certificate? (Y, or N for Tailscale / your own proxy)
+2. Any extra hostnames or IPs for the certificate (the machine's own names and IPs are always included)
+3. Time zone (defaults to the server's)
+4. Which day your pay week starts
+5. Admin username and password
 
-`setup.sh` is safe to re-run after `git pull`: it updates code and dependencies and **never** overwrites the env
-file, the database key, the database or the CA. Code: `/opt/billtrack/src` (root-owned). Data:
-`/var/lib/billtrack`. Key: `/etc/billtrack/db.key`. **Back up the key separately** (password manager); without
-it the data is gone.
+It then prints the address (e.g. `https://192.168.1.50`) and how to trust the certificate on your devices.
+Email, push and everything else are set in **Admin → Settings**.
+
+**Updating:** `git pull && sudo ./setup.sh`. It shows your saved answers and asks *Keep these settings?*. Press
+Enter to keep them, or `n` to change the proxy choice or certificate names, issue a fresh certificate, or start a
+new certificate authority. Answers are stored in `/etc/billtrack/install.conf` (root-only). Run without a terminal
+(e.g. from automation) and it silently reuses the saved answers.
+
+Updates **never** overwrite the env file, the database key, the database, the CA or users. Code:
+`/opt/billtrack/src` (root-owned). Data: `/var/lib/billtrack`. Key: `/etc/billtrack/db.key`. **Back up the key
+separately** (password manager); without it the data is gone.
 
 Upgrading from 1.x: `git pull && sudo ./setup.sh`. Plaintext 1.0 databases are encrypted automatically; the
 original user becomes admin.
@@ -77,7 +84,8 @@ original user becomes admin.
 - `setup.sh` creates a **local certificate authority** (`/etc/billtrack/tls/ca.crt`, 10 years, private key
   root-only) and a **server certificate** signed by it (397 days, ECDSA P-256) covering the hostname,
   `hostname.local`, `localhost` and every IPv4 address on the box. Re-running setup re-issues the server
-  certificate automatically when it's within 30 days of expiry or the machine's names/IPs change. Because devices
+  certificate automatically when it's within 30 days of expiry or the machine's names/IPs change (or when you
+  ask for a fresh one during an update). Because devices
   trust the CA, not the server certificate, renewals never need re-trusting.
 - Firewall: if `ufw` is active, 80/tcp and 443/tcp are opened.
 - Admin → Settings → Public URL is filled in with `https://<server-ip>` on first install.
@@ -106,9 +114,9 @@ docker compose exec billtrack python -m app.manage adduser jc admin
 ```
 
 ### Other ways to reach it
-- **Tailscale** (works away from home, real certificate): `sudo ./setup.sh --no-proxy` then
+- **Tailscale** (works away from home, real certificate): answer **N** to the HTTPS question, then
   `sudo tailscale serve --bg 8080` and open `https://<host>.<tailnet>.ts.net`.
-- **Your own proxy** (Caddy, Traefik, existing nginx): `--no-proxy`, proxy to `127.0.0.1:8080`, pass `Host` and
+- **Your own proxy** (Caddy, Traefik, existing nginx): answer **N** to the HTTPS question, proxy to `127.0.0.1:8080`, pass `Host` and
   `X-Forwarded-Proto: https`.
 - **Docker** doesn't include a proxy; put one of the above in front of `127.0.0.1:8080`.
 
@@ -165,6 +173,9 @@ curl -H "Authorization: Bearer bt_..." -H "Content-Type: application/json" \
 Bearer requests use plain JSON over TLS (scripts can't do the browser channel) and are limited to the token's
 scope and its owner's permissions. Full schema: `GET /api/openapi.json` with the token.
 
+Update a balance from a script: `POST /api/accounts/{id}/balance` with `{"balance_cents": 254000}` (write token).
+Account and card summary: `GET /api/accounts/overview`.
+
 Main endpoints: `/api/week`, `/api/summary`, `/api/trend`, `/api/reports/overview`, `/api/bills`,
 `/api/income-sources`, `/api/income-extra`, `/api/expenses`, `/api/accounts`, `/api/payments`, `/api/received`,
 `/api/overrides`, `/api/trackers`, `/api/trackers/items`, `/api/trackers/entries`, `/api/investments`,
@@ -185,7 +196,7 @@ pip install -r requirements.txt pytest httpx
 export BT_DB_KEY=$(python -c 'import secrets;print(secrets.token_hex(32))') BT_COOKIE_SECURE=false
 python -m app.manage adduser dev admin
 uvicorn app.main:app --reload --port 8080
-python -m pytest -q        # 23 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
+python -m pytest -q        # 24 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
 pip-audit -r requirements.txt
 ```
 

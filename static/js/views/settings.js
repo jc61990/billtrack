@@ -48,7 +48,8 @@ function alertsPrefs(me) {
     el("fieldset", {}, el("legend", {}, "What to send"),
       check("bill_reminders", "Upcoming bill reminders", p.bill_reminders), check("due_alerts", "Bills due today", p.due_alerts),
       check("overdue_alerts", "Overdue bills", p.overdue_alerts), check("digest", "Weekly money summary", p.digest),
-      check("tracker_alerts", "Tracker milestones", p.tracker_alerts)),
+      check("tracker_alerts", "Tracker milestones", p.tracker_alerts),
+      check("balance_alerts", "Low balances, card utilization and card due dates", p.balance_alerts)),
     err, el("div", { class: "actions left" }, el("button", { type: "submit", class: "primary" }, "Save alerts"),
       el("button", { type: "button", onclick: async () => {
         try { const r = await api("POST", "/api/me/notify-test"); toast(`Inbox ✓ · Email: ${r.email ?? "off"} · Push: ${r.push ?? "off"}`); }
@@ -57,7 +58,7 @@ function alertsPrefs(me) {
   f.onsubmit = async (e) => {
     e.preventDefault(); err.textContent = "";
     const prefs = { ntfy_topic: topic.value.trim() };
-    for (const k of ["email_alerts", "push_alerts", "bill_reminders", "due_alerts", "overdue_alerts", "digest", "tracker_alerts"])
+    for (const k of ["email_alerts", "push_alerts", "bill_reminders", "due_alerts", "overdue_alerts", "digest", "tracker_alerts", "balance_alerts"])
       prefs[k] = f.elements[k].checked;
     try { await api("PUT", "/api/me", { display_name: me.display_name, email: me.email, prefs }); toast("Alert settings saved"); refresh(); }
     catch (x) { err.textContent = x.message; }

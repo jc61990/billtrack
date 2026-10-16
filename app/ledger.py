@@ -267,3 +267,85 @@ def overview(con, lo: date, hi: date, group: str, perms: set):
                                               "remaining_cents", "weekly_needed_cents")} for t in trackers(con)]
     res["net_worth_cents"] = nw
     return res
+
+
+# ---------- bank accounts + credit cards ----------
+BANK = {"checking", "savings", "cash"}
+
+
+def next_due(day: int | None, t: date) -> date | None:
+    if not day:
+        return None
+    import calendar
+    for k in range(0, 2):
+        y, m = t.year + (t.month - 1 + k) // 12, (t.month - 1 + k) % 12 + 1
+        d = date(y, m, min(day, calendar.monthrange(y, m)[1]))
+        if d >= t:
+            return d
+    return None
+
+
+def utilization(balance: int, limit: int) -> float | None:
+    return round(max(0, balance) / limit, 4) if limit > 0 else None
+
+
+def accounts_view(con):
+    """Bank accounts with projected end-of-week balance; credit cards with utilization; 90-day history."""
+    t = today()
+    ws = week_start_of(t)
+    we = ws + timedelta(days=6)
+    accts = rows(con, "SELECT * FROM accounts ORDER BY name COLLATE NOCASE")
+    # money still expected to move through each account between today and the end of this pay week
+    pending: dict = defaultdict(int)
+    for b in bill_occurrences(con, t, we):
+        if b["status"] in ("overdue", "due-soon", "upcoming", "autopay") and b["account_id"]:
+            pending[b["account_id"]] -= b["amount_cents"]
+    for p in pay_occurrences(con, t, we):
+        if not p["received"] and p["account_id"]:
+            pending[p["account_id"]] += p["amount_cents"]
+    hist: dict = defaultdict(list)
+    for h in rows(con, "SELECT account_id, date, balance_cents FROM account_history WHERE date >= ? ORDER BY date",
+                  ((t - timedelta(days=90)).isoformat(),)):
+        hist[h["account_id"]].append({"date": h["date"], "balance_cents": h["balance_cents"]})
+    banks, cards, other = [], [], []
+    for a in accts:
+        a["history"] = hist.get(a["id"], [])
+        if a["kind"] in BANK:
+            a["projected_cents"] = a["balance_cents"] + pending.get(a["id"], 0)
+            a["pending_cents"] = pending.get(a["id"], 0)
+            a["low"] = bool(a["low_balance_cents"]) and a["balance_cents"] < a["low_balance_cents"]
+            a["projected_low"] = bool(a["low_balance_cents"]) and a["projected_cents"] < a["low_balance_cents"]
+            banks.append(a)
+        elif a["kind"] == "credit":
+            a["utilization"] = utilization(a["balance_cents"], a["credit_limit_cents"])
+            a["available_cents"] = max(0, a["credit_limit_cents"] - a["balance_cents"]) if a["credit_limit_cents"] else None
+            nd = next_due(a["due_day"], t)
+            a["next_due"] = nd.isoformat() if nd else None
+            a["days_to_due"] = (nd - t).days if nd else None
+            a["over_alert"] = a["utilization"] is not None and a["utilization"] * 100 >= a["util_alert_pct"] > 0
+            a["upcoming_charges_cents"] = -pending.get(a["id"], 0) if pending.get(a["id"], 0) < 0 else 0
+            cards.append(a)
+        else:
+            other.append(a)
+    card_bal = sum(max(0, c["balance_cents"]) for c in cards)
+    card_lim = sum(c["credit_limit_cents"] for c in cards if c["credit_limit_cents"])
+    return {
+        "week_end": we.isoformat(), "banks": banks, "cards": cards, "other": other,
+        "cash_cents": sum(a["balance_cents"] for a in banks),
+        "projected_cash_cents": sum(a["projected_cents"] for a in banks),
+        "card_balance_cents": card_bal, "card_limit_cents": card_lim,
+        "card_utilization": utilization(card_bal, card_lim),
+        "card_min_due_cents": sum(c["min_payment_cents"] for c in cards if c["days_to_due"] is not None and c["days_to_due"] <= 31),
+    }
+
+
+def record_balance(con, account_id: int, balance_cents: int):
+    con.execute("INSERT INTO account_history(account_id,date,balance_cents) VALUES (?,?,?) "
+                "ON CONFLICT(account_id,date) DO UPDATE SET balance_cents=excluded.balance_cents",
+                (account_id, today().isoformat(), balance_cents))
+
+
+def snapshot_accounts(con):
+    for a in rows(con, "SELECT id, balance_cents FROM accounts"):
+        con.execute("INSERT OR IGNORE INTO account_history(account_id,date,balance_cents) VALUES (?,?,?)",
+                    (a["id"], today().isoformat(), a["balance_cents"]))

@@ -73,7 +73,8 @@ def send_push(topic: str, title: str, body: str, priority="default") -> bool:
 
 def prefs(user) -> dict:
     p = {"email_alerts": True, "push_alerts": False, "ntfy_topic": "", "digest": True,
-         "bill_reminders": True, "due_alerts": True, "overdue_alerts": True, "tracker_alerts": True}
+         "bill_reminders": True, "due_alerts": True, "overdue_alerts": True, "tracker_alerts": True,
+         "balance_alerts": True}
     try:
         p.update(json.loads(user["prefs"] or "{}"))
     except ValueError:
@@ -190,7 +191,9 @@ def check_once() -> None:
             else:
                 con.execute("UPDATE reminders SET active=0 WHERE id=?", (r["id"],))
 
+        account_alerts(con)
         ledger.snapshot_investments(con)
+        ledger.snapshot_accounts(con)
 
         # Housekeeping
         n = now_utc()
@@ -199,6 +202,46 @@ def check_once() -> None:
         con.execute("DELETE FROM alert_log WHERE sent_at < ?", (iso(n - timedelta(days=120)),))
         con.execute("DELETE FROM sessions WHERE expires_at < ?", (iso(n),))
         con.execute("DELETE FROM reset_tokens WHERE expires_at < ?", (iso(n),))
+
+
+def account_alerts(con) -> int:
+    """Low balance, projected low balance this week, card utilization over threshold, card payment due soon.
+    Each fires once; a condition that clears re-arms its alert. Returns alerts delivered."""
+    v = ledger.accounts_view(con)
+    conds = []   # (ref, kind, active, level, line)
+    for a in v["banks"]:
+        if a["low_balance_cents"]:
+            conds.append((f"acct:{a['id']}:low", "low", a["low"], "warn",
+                          f"Low balance: {a['name']} is {money(a['balance_cents'])} "
+                          f"(alert below {money(a['low_balance_cents'])})"))
+            conds.append((f"acct:{a['id']}:proj:{v['week_end']}", "projected", a["projected_low"] and not a["low"], "warn",
+                          f"Heads up: {a['name']} will be about {money(a['projected_cents'])} by {v['week_end']} after "
+                          f"scheduled bills (alert below {money(a['low_balance_cents'])})"))
+    for c in v["cards"]:
+        if c["utilization"] is not None and c["util_alert_pct"]:
+            conds.append((f"card:{c['id']}:util", str(c["util_alert_pct"]), c["over_alert"], "warn",
+                          f"{c['name']} is {round(c['utilization'] * 100)}% utilized "
+                          f"({money(c['balance_cents'])} of {money(c['credit_limit_cents'])}; alert at {c['util_alert_pct']}%)"))
+        if c["next_due"] and c["balance_cents"] > 0:
+            conds.append((f"card:{c['id']}:due:{c['next_due']}", "due", 0 <= c["days_to_due"] <= 3, "warn",
+                          f"{c['name']} payment due {c['next_due']}"
+                          + (f", minimum {money(c['min_payment_cents'])}" if c["min_payment_cents"] else "")
+                          + f", balance {money(c['balance_cents'])}"))
+    for ref, kind, active, _, _ in conds:
+        if not active:
+            con.execute("DELETE FROM alert_log WHERE ref=? AND kind=?", (ref, kind))  # re-arm
+    sent = 0
+    for u in rows(con, "SELECT * FROM users WHERE disabled=0"):
+        if "finance:read" not in effective_perms(u) or not prefs(u)["balance_alerts"]:
+            continue
+        due = [(ref, kind, line) for ref, kind, active, _, line in conds if active and not _already(con, u["id"], ref, kind)]
+        if due:
+            deliver(con, u, "Account alert" if len(due) == 1 else f"{len(due)} account alerts",
+                    "\n".join(x[2] for x in due), "warn")
+            for ref, kind, _ in due:
+                _mark(con, u["id"], ref, kind)
+            sent += 1
+    return sent
 
 
 def next_reminder(cur: str, rec: str, after: str) -> str | None:

@@ -60,14 +60,63 @@ export function expenseForm(x = {}, presetDate) {
   ], save("/api/expenses", x.id), del("/api/expenses", x.id));
 }
 
-export function accountForm(a = {}) {
-  openForm(a.id ? "Edit account" : "Add account", [
-    { name: "name", label: "Account name", value: a.name, required: true, placeholder: "Checking" },
-    { name: "kind", label: "Type", type: "select", options: [["checking", "Checking"], ["savings", "Savings"], ["cash", "Cash"],
-      ["credit", "Credit card"], ["loan", "Loan"], ["other", "Other"]], value: a.kind || "checking", pair: 1 },
-    { name: "color", label: "Color", type: "color", value: a.color || "#3b6ea5", pair: 1 },
-    { name: "balance_cents", label: "Current balance (amount owed for cards/loans)", type: "money", neg: 1, zero: 1, value: a.balance_cents ?? 0 },
-  ], save("/api/accounts", a.id), del("/api/accounts", a.id));
+const ACCT_KINDS = { checking: "Checking", savings: "Savings", cash: "Cash", credit: "Credit card", loan: "Loan", other: "Other" };
+
+/** Full account payload (the API replaces every field, so always send them all). */
+function acctBody(a, d) {
+  return {
+    name: d.name ?? a.name, kind: d.kind ?? a.kind ?? "checking", color: d.color ?? a.color ?? "#3b6ea5",
+    balance_cents: d.balance_cents ?? a.balance_cents ?? 0, institution: d.institution ?? a.institution ?? "",
+    last4: d.last4 ?? a.last4 ?? "", credit_limit_cents: d.credit_limit_cents ?? a.credit_limit_cents ?? 0,
+    low_balance_cents: d.low_balance_cents ?? a.low_balance_cents ?? 0,
+    util_alert_pct: d.util_alert_pct ?? a.util_alert_pct ?? 30,
+    apr_bps: d.apr_pct !== undefined ? Math.round((d.apr_pct || 0) * 100) : (a.apr_bps ?? 0),
+    due_day: d.due_day !== undefined ? (d.due_day || null) : (a.due_day ?? null),
+    min_payment_cents: d.min_payment_cents ?? a.min_payment_cents ?? 0, notes: d.notes ?? a.notes ?? "",
+  };
+}
+const saveAcct = (a) => (d) => a.id ? api("PUT", `/api/accounts/${a.id}`, acctBody(a, d)) : api("POST", "/api/accounts", acctBody(a, d));
+
+export function accountForm(a = {}) { return (a.kind === "credit") ? cardForm(a) : bankForm(a); }
+
+export function bankForm(a = {}, kind) {
+  const k = a.kind || kind || "checking";
+  openForm(a.id ? `Edit ${a.name}` : `Add ${ACCT_KINDS[k].toLowerCase()} account`, [
+    { name: "name", label: "Name", value: a.name, required: true, placeholder: "Everyday checking" },
+    { name: "kind", label: "Type", type: "select", options: Object.entries(ACCT_KINDS).filter(([v]) => v !== "credit"), value: k, pair: 1 },
+    { name: "institution", label: "Bank", value: a.institution, max: 60, pair: 1 },
+    { name: "balance_cents", label: k === "loan" ? "Amount owed" : "Current balance", type: "money", neg: 1, zero: 1, value: a.balance_cents ?? 0, pair: 1 },
+    { name: "last4", label: "Last 4 digits (optional)", value: a.last4, max: 4, pattern: "\\d{4}", pair: 1 },
+    { name: "low_balance_cents", label: "Alert me if balance drops below", type: "money", zero: 1, value: a.low_balance_cents ?? 0,
+      hint: "Also warns if scheduled bills will take it below this by the end of the week. 0 = off." },
+    { name: "color", label: "Color", type: "color", value: a.color || "#3b6ea5" },
+    { name: "notes", label: "Notes", type: "textarea", value: a.notes },
+  ], saveAcct(a), a.id ? () => api("DELETE", `/api/accounts/${a.id}`) : null);
+}
+
+export function cardForm(a = {}) {
+  openForm(a.id ? `Edit ${a.name}` : "Add credit card", [
+    { name: "name", label: "Card name", value: a.name, required: true, placeholder: "Visa Rewards" },
+    { name: "institution", label: "Issuer", value: a.institution, max: 60, pair: 1 },
+    { name: "last4", label: "Last 4 digits", value: a.last4, max: 4, pattern: "\\d{4}", pair: 1,
+      hint: "Never enter the full card number." },
+    { name: "balance_cents", label: "Current balance owed", type: "money", zero: 1, value: a.balance_cents ?? 0, pair: 1 },
+    { name: "credit_limit_cents", label: "Credit limit", type: "money", zero: 1, value: a.credit_limit_cents ?? 0, pair: 1 },
+    { name: "util_alert_pct", label: "Alert at utilization %", type: "number", min: 0, max: 100, value: a.util_alert_pct ?? 30, pair: 1,
+      hint: "30% is the usual guideline. 0 = off." },
+    { name: "apr_pct", label: "APR %", type: "number", step: "0.01", min: 0, max: 100, value: a.apr_bps ? a.apr_bps / 100 : "", pair: 1 },
+    { name: "due_day", label: "Payment due day of month", type: "number", min: 1, max: 31, value: a.due_day ?? "", nullable: 1, pair: 1 },
+    { name: "min_payment_cents", label: "Minimum payment", type: "money", zero: 1, value: a.min_payment_cents ?? 0, pair: 1 },
+    { name: "color", label: "Color", type: "color", value: a.color || "#a3352b" },
+    { name: "notes", label: "Notes", type: "textarea", value: a.notes },
+  ], (d) => saveAcct({ ...a, kind: "credit" })({ ...d, kind: "credit" }), a.id ? () => api("DELETE", `/api/accounts/${a.id}`) : null);
+}
+
+export function balanceForm(a) {
+  openForm(`Update ${a.name}`, [
+    { name: "balance_cents", label: a.kind === "credit" || a.kind === "loan" ? "Balance owed now" : "Balance now",
+      type: "money", neg: a.kind !== "credit", required: true, value: a.balance_cents },
+  ], (d) => api("POST", `/api/accounts/${a.id}/balance`, d), null, "Update");
 }
 
 export function receivedForm(p) {

@@ -47,6 +47,7 @@ class Prefs(In):
     due_alerts: bool = True
     overdue_alerts: bool = True
     tracker_alerts: bool = True
+    balance_alerts: bool = True
 
 
 class MeIn(In):
