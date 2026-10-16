@@ -1,4 +1,4 @@
-FROM python:3.12-slim-bookworm
+FROM python:3.15-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 BT_DB_PATH=/data/billtrack.db \
     FORWARDED_ALLOW_IPS=127.0.0.1
 RUN useradd --system --uid 10001 --home /app --shell /usr/sbin/nologin billtrack \
