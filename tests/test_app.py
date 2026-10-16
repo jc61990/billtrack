@@ -410,7 +410,7 @@ def test_upgrade_snapshots_rotate_and_restore(admin, tmp_path):
     import time as _t
     made = []
     for i in range(9):
-        p, removed = db.snapshot(str(tmp_path), keep=7, label=f"v2.6.{i}")
+        p, removed = db.snapshot(str(tmp_path), keep=7, label=f"pre-2.6.{i}")
         made.append(os.path.basename(p))
         _t.sleep(1.01)   # names are second-resolution timestamps
     left = sorted(f for f in os.listdir(tmp_path) if db.SNAP_RE.match(f))
@@ -422,3 +422,45 @@ def test_upgrade_snapshots_rotate_and_restore(admin, tmp_path):
     con.close()
     before, after = db.vacuum()
     assert after <= before or after > 0
+
+
+def test_maintenance_and_server_backups(admin):
+    import shutil as _sh
+    _sh.rmtree(db.backup_dir(), ignore_errors=True)
+    s = admin.get("/api/admin/system").json()
+    assert s["db_bytes"] > 0 and s["disk_free"] > 0 and "rows" in s
+    for op in ("checkpoint", "optimize", "prune", "integrity", "compact"):
+        r = admin.post(f"/api/admin/maintenance/{op}", headers=H)
+        assert r.status_code == 200, (op, r.text)
+    assert admin.post("/api/admin/maintenance/integrity", headers=H).json()["ok"] is True
+    assert admin.get("/api/admin/system").json()["last"]["compact"]["at"]
+    assert admin.post("/api/admin/maintenance/rm-rf", headers=H).status_code == 422
+    # manual backup, then change data, then restore it
+    admin.post("/api/accounts", json={"name": "BeforeBackup"}, headers=H)
+    name = admin.post("/api/admin/backups", json={}, headers=H).json()["name"]
+    admin.post("/api/accounts", json={"name": "AfterBackup"}, headers=H)
+    lst = admin.get("/api/admin/backups").json()
+    assert lst[0]["name"] == name and lst[0]["kind"] == "Manual"
+    assert admin.post(f"/api/admin/backups/{name}/restore", json={"confirm": "nope"}, headers=H).status_code == 422
+    r = admin.post(f"/api/admin/backups/{name}/restore", json={"confirm": "RESTORE"}, headers=H)
+    assert r.status_code == 200 and r.json()["safety"].endswith("-safety.db")
+    login_again = login("jc")
+    names = {a["name"] for a in login_again.get("/api/accounts").json()}
+    assert "BeforeBackup" in names and "AfterBackup" not in names
+    kinds = {b["kind"] for b in login_again.get("/api/admin/backups").json()}
+    assert kinds == {"Manual", "Before restore"}
+    # download re-locked with a passphrase
+    d = login_again.post(f"/api/admin/backups/{name}/download", json={"passphrase": "download pass 123"}, headers=H)
+    assert d.status_code == 200 and b"BeforeBackup" not in d.content
+    # path traversal / bogus names
+    for bad in ("..%2F..%2Fetc%2Fpasswd", "billtrack.db", "x.db"):
+        assert login_again.delete(f"/api/admin/backups/{bad}", headers=H).status_code in (404, 405)  # never served
+    assert login_again.delete(f"/api/admin/backups/{name}", headers=H).status_code == 200
+    # rotation is per kind: 9 manual backups leave 7 manual and keep the safety copy
+    import time as _t
+    for _ in range(9):
+        login_again.post("/api/admin/backups", json={}, headers=H); _t.sleep(1.01)
+    lst = login_again.get("/api/admin/backups").json()
+    assert sum(b["kind"] == "Manual" for b in lst) == 7 and sum(b["kind"] == "Before restore" for b in lst) == 1
+    mkuser("m8", "member")
+    assert login("m8").get("/api/admin/backups").status_code == 403

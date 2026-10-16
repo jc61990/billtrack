@@ -23,6 +23,206 @@ def _admins(con) -> int:
     return con.execute("SELECT count(*) FROM users WHERE role='admin' AND disabled=0").fetchone()[0]
 
 
+# ---------- system & maintenance ----------
+import os
+import shutil
+import tempfile
+import time as _time
+from datetime import datetime as _dt
+
+
+def _meta_get(con, key):
+    r_ = con.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    return json.loads(r_[0]) if r_ else None
+
+
+def _meta_set(con, key, val):
+    con.execute("INSERT INTO meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, json.dumps(val)))
+
+
+def _fsize(path):
+    return os.path.getsize(path) if os.path.exists(path) else 0
+
+
+@r.get("/system")
+def system_info(p: Principal = Admin):
+    from .. import config
+    dbp = config.DB_PATH
+    bdir = db.backup_dir()
+    du = shutil.disk_usage(os.path.dirname(os.path.abspath(dbp)))
+    with tx() as con:
+        pc = con.execute("PRAGMA page_count").fetchone()[0]
+        ps = con.execute("PRAGMA page_size").fetchone()[0]
+        free = con.execute("PRAGMA freelist_count").fetchone()[0]
+        tables = {t: con.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in (
+            "bills", "payments", "expenses", "income_extra", "income_received", "accounts", "account_history",
+            "networth_snapshots", "notifications", "audit_log", "plaid_txns", "users", "sessions")}
+        last = {k: _meta_get(con, f"maint:{k}") for k in ("compact", "integrity", "optimize", "checkpoint", "prune")}
+        cipher = {k: con.execute(f"PRAGMA {k}").fetchone()[0] for k in ("cipher_version", "cipher_provider_version")}
+    backups = list_backups()
+    return {"version": __version__, **cipher, "db_path": dbp, "backup_dir": bdir,
+            "db_bytes": _fsize(dbp), "wal_bytes": _fsize(dbp + "-wal"), "page_size": ps, "pages": pc,
+            "free_bytes": free * ps, "backups_bytes": sum(b["bytes"] for b in backups), "backups": len(backups),
+            "disk_total": du.total, "disk_used": du.used, "disk_free": du.free, "rows": tables, "last": last}
+
+
+Op = Literal["compact", "integrity", "optimize", "checkpoint", "prune"]
+
+
+@r.post("/maintenance/{op}")
+def maintenance(op: Op, request: Request, p: Principal = Admin):
+    t0 = _time.monotonic()
+    res: dict = {}
+    try:
+        if op == "compact":                         # rebuild file: removes free pages ("defrag")
+            before, after = db.vacuum()
+            res = {"before": before, "after": after, "saved": max(0, before - after)}
+        else:
+            con = db.connect()
+            try:
+                if op == "integrity":
+                    out = [r_[0] for r_ in con.execute("PRAGMA integrity_check").fetchall()]
+                    fk = con.execute("PRAGMA foreign_key_check").fetchall()
+                    cv = [r_[0] for r_ in con.execute("PRAGMA cipher_integrity_check").fetchall()]
+                    res = {"ok": out == ["ok"] and not fk and not cv, "integrity": out[:10],
+                           "foreign_key_problems": len(fk), "cipher_hmac_problems": len(cv)}
+                elif op == "optimize":                # refresh query-planner statistics
+                    con.execute("ANALYZE"); con.execute("PRAGMA optimize")
+                    res = {"ok": True}
+                elif op == "checkpoint":              # fold the write-ahead log into the main file
+                    busy, logp, ckp = con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                    res = {"ok": not busy, "frames": logp}
+                elif op == "prune":                   # trim history beyond what any screen uses
+                    cut = lambda d: (now_utc() - timedelta(days=d)).isoformat(timespec="seconds")
+                    res = {
+                        "read_notifications": con.execute("DELETE FROM notifications WHERE read_at IS NOT NULL AND ts < ?", (cut(30),)).rowcount,
+                        "expired_sessions": con.execute("DELETE FROM sessions WHERE expires_at < ?", (cut(0),)).rowcount,
+                        "used_tokens": con.execute("DELETE FROM reset_tokens WHERE used_at IS NOT NULL OR expires_at < ?", (cut(0),)).rowcount,
+                        "old_invites": con.execute("DELETE FROM invites WHERE expires_at < ?", (cut(30),)).rowcount,
+                    }
+                con.commit()
+            finally:
+                con.close()
+    except Exception as e:
+        msg = str(e)
+        if "locked" in msg or "busy" in msg:
+            raise HTTPException(409, "The database is busy right now. Try again in a moment.") from None
+        raise HTTPException(500, f"{op} failed: {type(e).__name__}") from None
+    res["seconds"] = round(_time.monotonic() - t0, 2)
+    res["at"] = iso(now_utc())
+    with tx() as con:
+        _meta_set(con, f"maint:{op}", res)
+        audit(con, request, f"maintenance {op}", detail=json.dumps(res)[:400])
+    return res
+
+
+# ---------- on-server backups ----------
+def _kind(name):
+    g = db.snap_group(name)
+    return {"pre": "Upgrade", "manual": "Manual", "safety": "Before restore"}.get(g, g or "Other")
+
+
+def list_backups():
+    d = db.backup_dir()
+    if not os.path.isdir(d):
+        return []
+    out = []
+    for f in sorted(os.listdir(d), reverse=True):
+        if db.SNAP_RE.match(f):
+            st = os.stat(os.path.join(d, f))
+            out.append({"name": f, "bytes": st.st_size, "kind": _kind(f),
+                        "created": _dt.strptime(f[10:25], "%Y%m%d-%H%M%S").isoformat(timespec="seconds")})
+    return out
+
+
+def _backup_path(name: str) -> str:
+    if not db.SNAP_RE.match(name) or os.path.basename(name) != name:   # no paths, no traversal
+        raise HTTPException(404, "No such backup")
+    path = os.path.join(db.backup_dir(), name)
+    if not os.path.isfile(path):
+        raise HTTPException(404, "No such backup")
+    return path
+
+
+@r.get("/backups")
+def backups(p: Principal = Admin):
+    return list_backups()
+
+
+class BackupNowIn(In):
+    keep: Annotated[int, Field(ge=1, le=60)] = 7
+
+
+@r.post("/backups", status_code=201)
+def backup_now(body: BackupNowIn, request: Request, p: Principal = Admin):
+    du = shutil.disk_usage(db.backup_dir() if os.path.isdir(db.backup_dir()) else os.path.dirname(db.backup_dir()))
+    from .. import config
+    if du.free < _fsize(config.DB_PATH) * 2 + 10 * 1024 * 1024:
+        raise HTTPException(507, "Not enough free disk space for a backup")
+    try:
+        path, removed = db.snapshot(db.backup_dir(), body.keep, "manual")
+    except Exception as e:
+        raise HTTPException(500, f"Backup failed: {type(e).__name__}") from None
+    with tx() as con:
+        audit(con, request, "backup created (server)", os.path.basename(path), f"rotated {len(removed)}")
+    return {"name": os.path.basename(path), "rotated": removed}
+
+
+@r.delete("/backups/{name}")
+def delete_backup(name: str, request: Request, p: Principal = Admin):
+    os.remove(_backup_path(name))
+    with tx() as con:
+        audit(con, request, "backup deleted", name)
+    return {"ok": True}
+
+
+class ConfirmIn(In):
+    confirm: Literal["RESTORE"]
+
+
+@r.post("/backups/{name}/restore")
+def restore_backup(name: str, body: ConfirmIn, request: Request, p: Principal = Admin):
+    path = _backup_path(name)
+    try:
+        db.connect(path).close()                      # opens with this server's key?
+    except db.KeyError_:
+        raise HTTPException(422, "This backup can't be opened with this server's key") from None
+    safety, _ = db.snapshot(db.backup_dir(), 7, "safety")   # undo point, in case
+    with tx() as con:
+        audit(con, request, "backup restore started", name, f"safety copy {os.path.basename(safety)}")
+    db.restore_live(path)
+    db.init()                                         # bring an older backup's schema up to date
+    settings.reset_cache()
+    with tx() as con:
+        audit(con, request, "backup restored", name, f"safety copy {os.path.basename(safety)}")
+    return {"ok": True, "safety": os.path.basename(safety)}
+
+
+class DlIn(In):
+    passphrase: Annotated[str, StringConstraints(min_length=12, max_length=256)]
+
+
+@r.post("/backups/{name}/download")
+def download_backup(name: str, body: DlIn, request: Request, p: Principal = Admin):
+    """Re-lock the stored backup with a passphrase you choose, so the file is usable away from this server."""
+    path = _backup_path(name)
+    with tempfile.TemporaryDirectory() as td:
+        out = os.path.join(td, "x.db")
+        con = db.connect(path)
+        try:
+            con.execute("ATTACH DATABASE ? AS bk KEY ?", (out, body.passphrase))
+            con.execute("SELECT sqlcipher_export('bk')")
+            con.execute("DETACH DATABASE bk")
+        finally:
+            con.close()
+        data = open(out, "rb").read()
+    with tx() as con:
+        audit(con, request, "backup downloaded", name)
+    return Response(data, media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+
+
 @r.get("/meta")
 def meta(p: Principal = Admin):
     con = db.connect()

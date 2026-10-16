@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.8.0 - 2026-10-16
+### Added
+- **Admin → Backup & system** rebuilt:
+  - Storage: database + WAL size, reclaimable free pages, backups size/count, disk total/used/free with usage bar.
+  - Maintenance actions with last-run result: Compact & defragment (VACUUM), Check integrity (`integrity_check`,
+    `cipher_integrity_check`, `foreign_key_check`), Optimize (ANALYZE + `PRAGMA optimize`), Flush write-ahead log,
+    Clean up old data. A busy database returns "try again" instead of hanging.
+  - Backups on this server: Back up now; list of all backups (upgrade / manual / before-restore); click or
+    right-click to Download (re-locked with your passphrase), Restore (typed confirmation, automatic safety copy,
+    online restore + schema upgrade, no restart), or Delete.
+- API: `GET /api/admin/system`, `POST /api/admin/maintenance/{compact|integrity|optimize|checkpoint|prune}`,
+  `GET/POST /api/admin/backups`, `DELETE /api/admin/backups/{name}`, `POST .../restore`, `POST .../download`.
+### Changed
+- Backup rotation is per kind (newest 7 upgrade, 7 manual, 7 before-restore), so one kind never evicts another.
+### Security
+- Backup names must match the snapshot pattern and are looked up only inside the backups folder (no paths).
+  All maintenance/backup endpoints are admin-only, refuse API tokens, and are audited.
+
 ## 2.7.0 - 2026-10-16
 ### Added
 - **Bank sync with Plaid** (optional, admin-only setup; free Plaid personal Trial covers up to 10 banks):

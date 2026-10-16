@@ -314,3 +314,10 @@ dialog h3 { margin: 0 0 1rem; font-size: 1.1rem; }
 .attn-list .row .amt { color: var(--ink-2); font-size: 0.85rem; margin-left: 0.8rem; }
 @media (max-width: 560px) { .up-list .tag { display: none; } }
 .tag.bank { color: var(--in); }
+/* ---------- admin: system ---------- */
+.disk { position: relative; height: 14px; background: var(--paper); border: 1px solid var(--rule); border-radius: 7px; overflow: hidden; margin-top: 0.8rem; }
+.disk i { position: absolute; top: 0; bottom: 0; left: 0; }
+.disk i.used { background: color-mix(in srgb, var(--ink-2) 55%, var(--sheet)); }
+.disk i.bt { background: var(--in); }
+.list.maint li { align-items: flex-start; }
+.list.maint li button { flex: none; }

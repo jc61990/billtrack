@@ -1,4 +1,4 @@
-import { api, closeDialog, confirmBox, el, fmtTs, money, onContext, openForm, refresh, S, showDialog, toast, fill } from "../core.js";
+import { api, closeDialog, confirmBox, el, fmtTs, money, onContext, openForm, refresh, S, showDialog, showMenu, toast, fill } from "../core.js";
 
 export const title = "Admin";
 let tab = "users", auditQ = "";
@@ -279,35 +279,144 @@ async function tokens(root) {
 }
 
 // ---------- backup / system ----------
-async function system(root) {
-  const m = await api("GET", "/api/admin/meta");
-  fill(root, 
-    el("section", { class: "card" }, el("h2", {}, "Encrypted backup"),
-      el("p", { class: "muted" }, "Downloads the whole database, locked with a passphrase you choose. Restore with billtrack-manage restore."),
-      el("button", { type: "button", class: "primary", onclick: backup }, "Download encrypted backup")),
-    el("section", { class: "card" }, el("h2", {}, "System"),
-      el("table", { class: "tbl" }, [["BillTrack", m.version], ["Database encryption", `SQLCipher ${m.cipher_version}`], ["Crypto library", m.cipher_provider_version]]
-        .map(([k, v]) => el("tr", {}, el("th", {}, k), el("td", {}, v))))));
+const fmtBytes = (b) => b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.max(0, Math.round(b / 1024))} KB`;
+const OPS = [
+  ["compact", "Compact & defragment", "Rebuilds the database file so it's stored contiguously and reclaims space left by deleted data.", true],
+  ["integrity", "Check integrity", "Verifies every page, the encryption authentication codes and links between records.", false],
+  ["optimize", "Optimize", "Refreshes the statistics the database uses to plan fast queries.", false],
+  ["checkpoint", "Flush write-ahead log", "Moves recent changes from the side log into the main file and shrinks the log.", false],
+  ["prune", "Clean up old data", "Removes read alerts older than 30 days, expired sign-ins, used reset links and old invites.", false],
+];
+
+function lastLine(op, r) {
+  if (!r) return "Never run";
+  const when = fmtTs(r.at);
+  if (op === "compact") return `${when} · saved ${fmtBytes(r.saved || 0)} (${fmtBytes(r.before)} → ${fmtBytes(r.after)})`;
+  if (op === "integrity") return `${when} · ${r.ok ? "✓ no problems" : `⚠ problems found: ${(r.integrity || []).slice(0, 2).join("; ")}`}`;
+  if (op === "prune") return `${when} · removed ${Object.entries(r).filter(([k, v]) => typeof v === "number" && k !== "seconds").reduce((a, [, v]) => a + v, 0)} rows`;
+  if (op === "checkpoint") return `${when} · ${r.ok ? "done" : "busy, try again"}`;
+  return `${when} · done in ${r.seconds}s`;
 }
 
-function backup() {
+async function system(root) {
+  const m = await api("GET", "/api/admin/system");
+  const usedPct = m.disk_total ? (m.disk_used / m.disk_total) * 100 : 0;
+  const btPct = m.disk_total ? ((m.db_bytes + m.wal_bytes + m.backups_bytes) / m.disk_total) * 100 : 0;
+
+  const storage = el("section", { class: "card" }, el("h2", {}, "Storage"),
+    el("div", { class: "kpis" },
+      el("div", {}, el("small", {}, "Database"), el("strong", {}, fmtBytes(m.db_bytes + m.wal_bytes)),
+        el("div", { class: "sub" }, m.wal_bytes ? `incl. ${fmtBytes(m.wal_bytes)} write-ahead log` : `${m.pages} pages × ${m.page_size} B`)),
+      el("div", {}, el("small", {}, "Reclaimable"), el("strong", { class: m.free_bytes > 1e6 ? "out" : "" }, fmtBytes(m.free_bytes)),
+        el("div", { class: "sub" }, "freed by Compact")),
+      el("div", {}, el("small", {}, "Backups on disk"), el("strong", {}, fmtBytes(m.backups_bytes)), el("div", { class: "sub" }, `${m.backups} files`)),
+      el("div", {}, el("small", {}, "Disk free"), el("strong", { class: m.disk_free < 1e9 ? "out" : "in" }, fmtBytes(m.disk_free)),
+        el("div", { class: "sub" }, `of ${fmtBytes(m.disk_total)}`))),
+    el("div", { class: "disk", role: "meter", "aria-label": "Disk usage", "aria-valuenow": Math.round(usedPct), "aria-valuemin": 0, "aria-valuemax": 100 },
+      el("i", { class: "used", style: `width:${usedPct}%` }), el("i", { class: "bt", style: `width:${Math.max(btPct, 0.5)}%` })),
+    el("div", { class: "legend" }, el("span", {}, `■ Disk used ${usedPct.toFixed(0)}%`), "  ",
+      el("span", { class: "in" }, `■ BillTrack ${fmtBytes(m.db_bytes + m.wal_bytes + m.backups_bytes)}`), "  ",
+      el("span", { class: "muted" }, m.db_path)));
+
+  const maint = el("section", { class: "card" }, el("h2", {}, "Maintenance"),
+    el("ul", { class: "list maint" }, OPS.map(([op, label, desc, confirmIt]) => {
+      const btn = el("button", { type: "button", onclick: async () => {
+        if (confirmIt && !(await confirmBox(label, `${desc} Takes a few seconds; the app may pause briefly. Run it now?`, "Run", false))) return;
+        btn.disabled = true; btn.textContent = "Running…";
+        try { await api("POST", `/api/admin/maintenance/${op}`); toast(`${label}: done`); } catch (e) { toast(e.message, true); }
+        refresh();
+      } }, "Run");
+      return el("li", {}, el("span", {}, el("strong", {}, label), el("div", { class: "meta" }, desc),
+        el("div", { class: "meta" }, lastLine(op, m.last[op]))), btn);
+    })));
+
+  const list = await api("GET", "/api/admin/backups");
+  const bkMenu = (b) => [
+    { label: "Download (locked with a passphrase)…", action: () => downloadStored(b) },
+    { label: "Restore this backup…", action: () => restoreStored(b) },
+    "-", { label: "Delete", danger: true, action: async () => {
+      if (await confirmBox("Delete backup?", `${b.name} (${fmtBytes(b.bytes)}) will be removed from the server.`, "Delete"))
+        api("DELETE", `/api/admin/backups/${encodeURIComponent(b.name)}`).then(() => { toast("Deleted"); refresh(); }).catch((e) => toast(e.message, true));
+    } },
+  ];
+  const rows = list.map((b) => {
+    const tr = el("tr", { class: "click", tabindex: 0, onclick: (e) => { const r = e.currentTarget.getBoundingClientRect(); showMenu(Math.min(e.clientX || r.left, innerWidth - 240), r.bottom, bkMenu(b)); } },
+      el("td", {}, fmtTs(b.created)), el("td", {}, el("span", { class: `tag ${b.kind === "Before restore" ? "due-soon" : ""}` }, b.kind)),
+      el("td", { class: "r" }, fmtBytes(b.bytes)), el("td", { class: "r" }, "⋯"));
+    tr.addEventListener("keydown", (e) => { if (e.key === "Enter") tr.click(); });
+    onContext(tr, () => bkMenu(b));
+    return tr;
+  });
+  const backupsCard = el("section", { class: "card" },
+    el("div", { class: "spread" }, el("h2", {}, "Backups on this server"),
+      el("div", { class: "actions left" },
+        el("button", { type: "button", class: "primary", onclick: async (e) => {
+          e.currentTarget.disabled = true;
+          try { const r = await api("POST", "/api/admin/backups", {}); toast(`Backed up${r.rotated.length ? `, rotated out ${r.rotated.length} old` : ""}`); }
+          catch (x) { toast(x.message, true); }
+          refresh();
+        } }, "Back up now"),
+        el("button", { type: "button", onclick: backup }, "Download a fresh copy…"))),
+    el("p", { class: "muted small" }, `Stored in ${m.backup_dir}. The newest 7 of each kind are kept (upgrade, manual, before-restore). `
+      + "Click a backup to download, restore or delete it."),
+    list.length ? el("div", { class: "scroll-x" }, el("table", { class: "tbl" },
+      el("tr", {}, el("th", {}, "Created"), el("th", {}, "Kind"), el("th", { class: "r" }, "Size"), el("th")), rows))
+      : el("p", { class: "muted" }, "No backups on the server yet."));
+
+  const sys = el("section", { class: "card" }, el("h2", {}, "System"),
+    el("table", { class: "tbl" }, [["BillTrack", m.version], ["Database encryption", `SQLCipher ${m.cipher_version}`],
+      ["Crypto library", m.cipher_provider_version],
+      ["Records", Object.entries(m.rows).map(([k, v]) => `${k.replace(/_/g, " ")} ${v}`).join(" · ")]]
+      .map(([k, v]) => el("tr", {}, el("th", {}, k), el("td", { class: "small" }, v)))));
+
+  fill(root, storage, maint, backupsCard, sys);
+}
+
+function passphraseDialog(title, note, onOk) {
   const pw = el("input", { type: "password", autocomplete: "new-password", minlength: 12, required: true });
   const pw2 = el("input", { type: "password", autocomplete: "new-password", required: true });
   const err = el("p", { class: "err", role: "alert" });
-  const form = showDialog("Encrypted backup", el("div", { class: "stack" },
-    el("p", { class: "muted" }, "You'll need this passphrase to restore. It isn't stored anywhere."),
+  const form = showDialog(title, el("div", { class: "stack" }, el("p", { class: "muted" }, note),
     el("label", {}, "Passphrase (12+ characters)", pw), el("label", {}, "Confirm", pw2), err),
   [el("button", { type: "submit", class: "primary" }, "Download")]);
   form.onsubmit = async (e) => {
     e.preventDefault();
     if (pw.value.length < 12) { err.textContent = "At least 12 characters"; return; }
     if (pw.value !== pw2.value) { err.textContent = "Passphrases don't match"; return; }
-    try {
-      const r = await api("POST", "/api/admin/backup", { passphrase: pw.value }, { raw: true });
-      const url = URL.createObjectURL(await r.blob());
-      const a = el("a", { href: url, download: `billtrack-backup-${S.me.today}.db` });
-      document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000);
-      closeDialog(); toast("Backup downloaded");
-    } catch (x) { err.textContent = x.message; }
+    try { await onOk(pw.value); closeDialog(); toast("Downloaded"); } catch (x) { err.textContent = x.message; }
+  };
+}
+
+function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = el("a", { href: url, download: name });
+  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+function backup() {
+  passphraseDialog("Download a fresh copy", "A copy of the database right now, locked with a passphrase you choose (not stored anywhere). Restore it with billtrack-manage restore.",
+    async (pass) => saveBlob(await (await api("POST", "/api/admin/backup", { passphrase: pass }, { raw: true })).blob(), `billtrack-backup-${S.me.today}.db`));
+}
+
+function downloadStored(b) {
+  passphraseDialog(`Download ${b.kind.toLowerCase()} backup`, "Backups on the server are locked with the server's key. The download is re-locked with a passphrase you choose so you can keep it somewhere else.",
+    async (pass) => saveBlob(await (await api("POST", `/api/admin/backups/${encodeURIComponent(b.name)}/download`, { passphrase: pass }, { raw: true })).blob(), b.name));
+}
+
+function restoreStored(b) {
+  const inp = el("input", { autocomplete: "off", placeholder: "RESTORE" });
+  const err = el("p", { class: "err", role: "alert" });
+  const form = showDialog("Restore this backup?", el("div", { class: "stack" },
+    el("p", {}, `Everything goes back to ${fmtTs(b.created)}. Changes made since then are replaced.`),
+    el("p", { class: "muted" }, "A safety copy of the current data is saved first (kind \"Before restore\"), so you can undo this. You may need to sign in again."),
+    el("label", {}, "Type RESTORE to confirm", inp), err),
+  [el("button", { type: "submit", class: "danger-solid" }, "Restore")]);
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    if (inp.value !== "RESTORE") { err.textContent = "Type RESTORE in capitals"; return; }
+    form.querySelector("button[type=submit]").disabled = true;
+    try { const r = await api("POST", `/api/admin/backups/${encodeURIComponent(b.name)}/restore`, { confirm: "RESTORE" });
+      closeDialog(); toast(`Restored. Safety copy: ${r.safety}`); setTimeout(() => location.reload(), 1200);
+    } catch (x) { err.textContent = x.message; form.querySelector("button[type=submit]").disabled = false; }
   };
 }

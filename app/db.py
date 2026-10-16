@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS plaid_txns (
   transaction_id TEXT PRIMARY KEY, plaid_account_id INTEGER NOT NULL REFERENCES plaid_accounts(id) ON DELETE CASCADE,
   date TEXT NOT NULL, name TEXT NOT NULL, amount_cents INTEGER NOT NULL, category TEXT NOT NULL DEFAULT '',
   outcome TEXT NOT NULL DEFAULT '', expense_id INTEGER, payment_id INTEGER, received_id INTEGER, seen_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_extra_date ON income_extra(date);
 CREATE INDEX IF NOT EXISTS ix_exp_date ON expenses(date);
 CREATE INDEX IF NOT EXISTS ix_audit_ts ON audit_log(ts);
@@ -380,7 +381,9 @@ def snapshot(out_dir: str, keep: int = 7, label: str = "") -> tuple[str, list[st
         chk.close()
     os.chmod(tmp, 0o600)
     os.replace(tmp, final)
-    snaps = sorted(f for f in os.listdir(out_dir) if SNAP_RE.match(f))
+    # rotate within the same kind only (upgrade "pre-*", "manual", "safety"), so one kind never evicts another
+    group = label.split("-")[0] if label else ""
+    snaps = sorted(f for f in os.listdir(out_dir) if SNAP_RE.match(f) and snap_group(f) == group)
     removed = []
     for f in snaps[:-keep]:
         os.remove(os.path.join(out_dir, f))
@@ -401,3 +404,25 @@ def vacuum(path: str | None = None) -> tuple[int, int]:
     finally:
         con.close()
     return before, size()
+
+
+def snap_group(name: str) -> str:
+    m = re.match(r"^billtrack-\d{8}-\d{6}-?([A-Za-z0-9.-]*)\.db$", name)
+    return (m.group(1).split("-")[0] if m and m.group(1) else "") if m else ""
+
+
+def backup_dir() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(config.DB_PATH)), "backups")
+
+
+def restore_live(snapshot_path: str) -> None:
+    """Copy a snapshot over the live database with SQLite's online backup (page-level, atomic for readers;
+    both files use the same key). Other connections simply see the restored data on their next query."""
+    key = load_key()
+    src = connect(snapshot_path, key)
+    dst = connect(None, key)
+    try:
+        src.backup(dst)
+    finally:
+        src.close()
+        dst.close()

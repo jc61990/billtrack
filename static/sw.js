@@ -1,5 +1,5 @@
 // App-shell cache only. API responses are never cached (always live = always in sync, nothing sensitive at rest).
-const CACHE = "bt-v2.7.0";
+const CACHE = "bt-v2.8.0";
 const SHELL = ["/", "/index.html", "/style.css", "/icon.svg", "/manifest.webmanifest", "/js/main.js", "/js/core.js",
   "/js/auth.js", "/js/forms.js", "/js/items.js", "/js/channel.js", ...["home", "week", "calendar", "accounts", "networth", "overview", "bills", "income", "trackers",
     "investments", "alerts", "settings", "admin"].map((v) => `/js/views/${v}.js`)];
