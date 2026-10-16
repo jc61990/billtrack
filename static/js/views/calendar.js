@@ -5,11 +5,14 @@ import { dayMenu } from "./week.js";
 export const title = "Calendar";
 const MAX_CHIPS = 3;
 
+let latest = 0;
 export async function render(root) {
+  const tok = ++latest;                  // fast clicking: only the newest month may draw
   const first = `${S.month}-01`;
   const lead = (parseIso(first).getUTCDay() + 6) % 7;
   const start = addDays(first, -lead), end = addDays(start, 41);
   const [data, rems] = await Promise.all([api("GET", `/api/summary?start=${start}&end=${end}&skipped=true`), reminderItems(start, end)]);
+  if (tok !== latest) return;
   const by = {};
   for (const it of [...collect(data), ...rems]) (by[it.date] ||= []).push(it);
   const cells = DOW.map((d) => el("div", { class: "dow" }, d));

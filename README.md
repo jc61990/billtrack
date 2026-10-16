@@ -4,7 +4,7 @@ Self-hosted bill, paycheck, savings and investment tracker built around the **we
 roles, two-factor sign-in, alerts by email and phone push, and encryption at every layer: the database on disk,
 secrets inside it, and every byte of browser traffic.
 
-![version](https://img.shields.io/badge/version-2.5.4-blue)
+![version](https://img.shields.io/badge/version-2.5.5-blue)
 
 ## Features
 
@@ -198,7 +198,7 @@ pip install -r requirements.txt pytest httpx
 export BT_DB_KEY=$(python -c 'import secrets;print(secrets.token_hex(32))') BT_COOKIE_SECURE=false
 python -m app.manage adduser dev admin
 uvicorn app.main:app --reload --port 8080
-python -m pytest -q        # 27 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
+python -m pytest -q        # 28 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
 pip-audit -r requirements.txt
 ```
 
@@ -209,6 +209,16 @@ app/db.py          SQLCipher, migrations, backup/restore        app/settings.py 
 app/ledger.py      money math, trackers, investments, reports   app/notify.py    email, push, inbox, scheduler
 app/routes/        auth, me, finance, trackers, admin           static/js/       PWA (ES modules, no build)
 ```
+
+## Troubleshooting
+
+| Symptom | Check |
+|---|---|
+| Page won't load / "502" or "504" | `sudo systemctl status billtrack` and `sudo journalctl -u billtrack -n 80 --no-pager` |
+| App stops responding | The built-in watchdog writes **FREEZE DETECTED** plus every thread's stack to the journal after 20 s. Find it with `sudo journalctl -u billtrack \| grep -A60 "FREEZE DETECTED"` and share that block. Dump stacks on demand: `sudo systemctl kill -s USR1 billtrack`. |
+| `systemctl restart` slow | It now gives in-flight requests 10 s, and systemd force-stops after 20 s. |
+| Certificate warning | Trust the CA once per device (see *Trusting the certificate*). |
+| nginx | `sudo nginx -t` and `sudo tail -n 30 /var/log/nginx/error.log` |
 
 ## Changelog
 See [CHANGELOG.md](CHANGELOG.md).

@@ -29,6 +29,7 @@ from . import config, crypto
 INFO = b"billtrack-channel-v1"
 IDLE_S, MAX_AGE_S, MAX_CHANNELS = 30 * 60, 12 * 3600, 5000
 CLOCK_SKEW_MS = 5 * 60 * 1000
+REPLAY_WINDOW = 256
 MAX_ENVELOPE = 600 * 1024
 COOKIE = "bt_session"
 
@@ -38,7 +39,8 @@ class Chan:
     key: AESGCM
     created: float
     used: float
-    seq: int = 0
+    seq: int = 0                       # highest sequence number seen
+    seen: set = field(default_factory=set)  # recent sequence numbers (out-of-order arrivals are fine, repeats are not)
     cookie: str | None = None      # hash of the session cookie this channel is bound to ("" = signed out)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -98,9 +100,14 @@ def open_request(c: Chan, cid: str, body: bytes) -> dict:
     if abs(t - time.time() * 1000) > CLOCK_SKEW_MS:
         raise ValueError("stale")
     with c.lock:
-        if seq <= c.seq:
+        # Browsers send several requests at once and they can arrive out of order. Accept anything within the
+        # last REPLAY_WINDOW sequence numbers that hasn't been seen before; refuse exact repeats and stale ones.
+        if seq < 1 or seq in c.seen or seq <= c.seq - REPLAY_WINDOW:
             raise ValueError("replay")
-        c.seq = seq
+        c.seen.add(seq)
+        if seq > c.seq:
+            c.seq = seq
+            c.seen = {x for x in c.seen if x > c.seq - REPLAY_WINDOW}
         c.used = time.monotonic()
     return msg
 

@@ -111,3 +111,21 @@ def test_index_source_differs_every_load():
     a, b = c.get("/"), c.get("/")
     assert a.text != b.text and "nonce-" in a.headers["content-security-policy"]
     assert a.headers["content-security-policy"] != b.headers["content-security-policy"]
+
+
+def test_out_of_order_requests_accepted_repeats_refused():
+    mkuser("jc", "admin")
+    c = Client()
+    c.call("POST", "/api/login", {"username": "jc", "password": PW})
+    e5 = c.envelope("GET", "/api/me", seq=105)
+    e3 = c.envelope("GET", "/api/me", seq=103)
+    e4 = c.envelope("GET", "/api/me", seq=104)
+    c.seq = 105
+    assert c.call(None, None, raw_env=e5)[0] == 200
+    c.seq = 103; assert c.call(None, None, raw_env=e3)[0] == 200      # arrived late: fine
+    c.seq = 104; assert c.call(None, None, raw_env=e4)[0] == 200
+    c.seq = 103; assert c.call(None, None, raw_env=e3)[0] == 419      # exact repeat: refused
+    old = c.envelope("GET", "/api/me", seq=105 + 1000)
+    c.seq = 1105; assert c.call(None, None, raw_env=old)[0] == 200
+    stale = c.envelope("GET", "/api/me", seq=200)
+    c.seq = 200; assert c.call(None, None, raw_env=stale)[0] == 419   # outside the window: refused

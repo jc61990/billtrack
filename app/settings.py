@@ -15,16 +15,18 @@ _lock = threading.Lock()
 
 def _load() -> dict:
     global _cache
+    c = _cache
+    if c is not None:
+        return c
+    vals = dict(config.DEFAULTS)
+    with tx() as con:   # outside the lock: a slow DB must never block other readers on the lock
+        for r in con.execute("SELECT key, value FROM settings"):
+            if r["key"] in vals:
+                v = json.loads(r["value"])
+                vals[r["key"]] = crypto.unseal(v, f"setting:{r['key']}") if r["key"] in SECRET else v
     with _lock:
-        if _cache is None:
-            vals = dict(config.DEFAULTS)
-            with tx() as con:
-                for r in con.execute("SELECT key, value FROM settings"):
-                    if r["key"] in vals:
-                        v = json.loads(r["value"])
-                        vals[r["key"]] = crypto.unseal(v, f"setting:{r['key']}") if r["key"] in SECRET else v
-            _cache = vals
-        return _cache
+        _cache = vals
+    return vals
 
 
 def get(key: str):

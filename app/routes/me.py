@@ -245,12 +245,14 @@ def clear_notifications(p: Principal = Self):
 @r.post("/me/notify-test")
 def notify_test(p: Principal = SelfSession):
     with tx() as con:
-        u = _user(con, p.user_id)
+        u = dict(_user(con, p.user_id))
         if "finance:read" in p.perms:
             subj, body = notify.digest(con, ledger.today())
         else:
             subj, body = "Test alert", "Alerts are working."
-        return notify.deliver(con, u, "[Test] " + subj, body)
+        notify.inbox(con, u["id"], "[Test] " + subj, body)
+    # send after the transaction is committed: a slow mail server never holds a database lock
+    return notify.deliver(None, u, "[Test] " + subj, body, wait=True)
 
 
 # ---------- reminders ----------

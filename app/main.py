@@ -31,6 +31,9 @@ async def lifespan(_app):
     except db.KeyError_ as e:
         log.critical("%s", e)
         raise SystemExit(1) from None
+    import anyio.to_thread
+    from . import watchdog
+    watchdog.start(asyncio.get_running_loop(), anyio.to_thread.current_default_thread_limiter())
     task = asyncio.create_task(notify.loop(config.CHECK_INTERVAL_MIN))
     yield
     task.cancel()

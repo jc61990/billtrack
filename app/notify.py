@@ -2,6 +2,8 @@
 import asyncio
 import json
 import logging
+import queue
+import threading
 import smtplib
 import ssl
 import urllib.request
@@ -87,22 +89,56 @@ def inbox(con, user_id: int, title: str, body: str = "", level="info"):
                 (user_id, iso(now_utc()), level, _clean(title), _clean(body, 4000)))
 
 
-def deliver(con, user, title: str, body: str, level="info", email=True, push=True) -> dict:
-    """In-app always; email/push per user prefs. Never raises."""
-    inbox(con, user["id"], title, body, level)
+# Email/push go through an outbox worker so no request or DB transaction ever waits on a mail or push server.
+_outbox: "queue.Queue[tuple]" = queue.Queue(maxsize=2000)
+_worker: threading.Thread | None = None
+_worker_lock = threading.Lock()
+
+
+def _send_worker():
+    while True:
+        kind, args = _outbox.get()
+        try:
+            (send_email if kind == "email" else send_push)(*args)
+        except Exception as e:
+            log.warning("%s send failed: %s", kind, type(e).__name__)
+        finally:
+            _outbox.task_done()
+
+
+def _enqueue(kind: str, *args) -> str:
+    global _worker
+    with _worker_lock:
+        if _worker is None or not _worker.is_alive():
+            _worker = threading.Thread(target=_send_worker, name="bt-outbox", daemon=True)
+            _worker.start()
+    try:
+        _outbox.put_nowait((kind, args))
+        return "queued"
+    except queue.Full:
+        log.warning("outbox full, dropping %s", kind)
+        return "dropped (outbox full)"
+
+
+def deliver(con, user, title: str, body: str, level="info", email=True, push=True, wait=False) -> dict:
+    """In-app always; email/push per user prefs. Queued unless wait=True (used only by 'send test'). Never raises."""
+    if con is not None:
+        inbox(con, user["id"], title, body, level)
     pr, res = prefs(user), {"inbox": True}
+    jobs = []
     if email and pr["email_alerts"] and user["email"]:
-        try:
-            res["email"] = send_email(user["email"], title, body)
-        except Exception as e:
-            log.warning("email to user %s failed: %s", user["id"], type(e).__name__)
-            res["email"] = f"error: {type(e).__name__}"
+        jobs.append(("email", (user["email"], title, body)))
     if push and pr["push_alerts"] and pr["ntfy_topic"]:
+        jobs.append(("push", (pr["ntfy_topic"], title, body, "high" if level == "warn" else "default")))
+    for kind, args in jobs:
+        if not wait:
+            res[kind] = _enqueue(kind, *args)
+            continue
         try:
-            res["push"] = send_push(pr["ntfy_topic"], title, body, "high" if level == "warn" else "default")
+            res[kind] = (send_email if kind == "email" else send_push)(*args)
         except Exception as e:
-            log.warning("push to user %s failed: %s", user["id"], type(e).__name__)
-            res["push"] = f"error: {type(e).__name__}"
+            log.warning("%s to user %s failed: %s", kind, user["id"], type(e).__name__)
+            res[kind] = f"error: {type(e).__name__}"
     return res
 
 

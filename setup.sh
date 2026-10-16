@@ -182,8 +182,9 @@ WorkingDirectory=$APP_DIR/src
 EnvironmentFile=$ENV_FILE
 Environment=BT_DB_PATH=$DB_FILE
 Environment=BT_DB_KEY_FILE=$KEY_FILE
-ExecStart=$APP_DIR/.venv/bin/uvicorn app.main:app --host $BIND --port $PORT --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-server-header
+ExecStart=$APP_DIR/.venv/bin/uvicorn app.main:app --host $BIND --port $PORT --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-server-header --timeout-graceful-shutdown 10
 Restart=on-failure
+TimeoutStopSec=20
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

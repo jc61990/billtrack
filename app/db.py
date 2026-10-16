@@ -222,16 +222,17 @@ def connect(path: str | None = None, key: str | None = None):
     os.makedirs(d, mode=0o700, exist_ok=True)
     if is_plaintext(path):
         raise KeyError_("Database is not encrypted yet. Run: python -m app.manage encrypt-db")
-    con = sqlite.connect(path, timeout=10)
+    con = sqlite.connect(path, timeout=5)
     con.row_factory = sqlite.Row
     _apply_key(con, key or load_key())
-    con.execute("PRAGMA journal_mode = WAL")      # WAL pages are encrypted too
+    con.execute("PRAGMA busy_timeout = 5000")     # wait at most 5 s for a lock, then fail (never hang)
     return con
 
 
 def init() -> None:
     con = connect()
     try:
+        con.execute("PRAGMA journal_mode = WAL")   # persistent; WAL pages are encrypted too
         migrate(con)
         con.commit()
     finally:

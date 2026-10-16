@@ -14,9 +14,12 @@ export function dayMenu(d) {
   ];
 }
 
+let latest = 0;
 export async function render(root) {
+  const tok = ++latest;                  // fast clicking: only the newest week may draw
   const [w, trend] = await Promise.all([api("GET", `/api/week?day=${S.day}`), api("GET", "/api/trend?back=8&ahead=4")]);
   const items = [...collect(w), ...(await reminderItems(w.start, w.end))];
+  if (tok !== latest) return;
   const days = [];
   let run = 0;
   for (let i = 0; i < 7; i++) {

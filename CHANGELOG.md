@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.5.5 - 2026-10-16
+### Fixed
+- **App could stop responding** (reported after fast clicking back through the calendar). Hardening for the
+  likely causes found while reproducing:
+  - Encrypted channel accepted requests only in strict order. Browsers send several at once and they can arrive
+    out of order, which caused rejects, re-handshakes and retry storms under fast clicking. Now any unseen sequence
+    number within the last 256 is accepted; exact repeats and stale ones are still refused (replay protection kept).
+  - Email/push alerts were sent while holding a database write transaction, so a slow mail/push server could
+    block every other request. Alerts now go through a background outbox and never hold a database lock.
+  - System-settings cache no longer holds its lock during database I/O (it's also read on the async path).
+  - SQLite waits at most 5 s for a lock and then fails instead of piling up; WAL mode is set once at startup
+    instead of on every connection.
+  - Calendar and Week ignore slower, older responses when you click quickly, so the month shown always matches
+    the month you navigated to.
+- `systemctl restart` could hang behind stuck requests: uvicorn now waits at most 10 s for them
+  (`--timeout-graceful-shutdown 10`) and systemd force-stops after 20 s (`TimeoutStopSec=20`).
+### Added
+- **Freeze watchdog:** if the event loop is unresponsive, or every worker thread is busy, for 20 s, it logs
+  `FREEZE DETECTED` and dumps every thread's stack to the journal. `systemctl kill -s USR1 billtrack` dumps on
+  demand. README has a Troubleshooting section.
+
 ## 2.5.4 - 2026-10-16
 ### Changed
 - Calendar chips and Week rows for money going out (bills, spending) now use the **color of the account they come
