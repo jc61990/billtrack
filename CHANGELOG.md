@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.8.2 - 2026-10-16
+### Changed
+- Email settings: choosing **Sign in: None** hides the username and password fields (saved values are kept but
+  never used). The encryption dropdown is renamed "Encryption (always on)"; changing it switches the port to the
+  standard one (587 STARTTLS / 465 SSL) when a standard port was set, and saving refuses SSL/TLS on a port other
+  than 465 or STARTTLS on 465 with a clear message.
+
 ## 2.8.1 - 2026-10-16
 ### Added
 - Email **Sign in** option: *Username and password* or *None* for relays that allow-list the server's IP (e.g.

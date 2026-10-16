@@ -221,7 +221,7 @@ async function settings(root) {
     el("fieldset", {}, el("legend", {}, "Email (SMTP, TLS required)"),
       f("smtp_host", "Server", "text", { placeholder: "smtp.gmail.com" }),
       el("div", { class: "row2" }, f("smtp_port", "Port", "number", { min: 1, max: 65535 }),
-        sel("smtp_tls", "Security", [["starttls", "STARTTLS (587)"], ["ssl", "SSL/TLS (465)"]])),
+        sel("smtp_tls", "Encryption (always on)", [["starttls", "STARTTLS (587 or 25)"], ["ssl", "SSL/TLS (465)"]])),
       sel("smtp_auth", "Sign in to the mail server", [["password", "Username and password"],
         ["none", "None: this server's IP is allow-listed (e.g. Google Workspace SMTP relay)"]]),
       f("smtp_user", "Username"), f("smtp_pass", "Password", "password", { placeholder: s.smtp_pass_set ? "•••••••• (saved, leave blank to keep)" : "",
@@ -241,15 +241,27 @@ async function settings(root) {
     err,
     el("div", { class: "actions left" }, el("button", { type: "submit", class: "primary" }, "Save settings"),
       el("button", { type: "button", onclick: () => api("POST", "/api/admin/settings/test-email").then(() => toast("Test email sent")).catch((e) => toast(e.message, true)) }, "Send test email")));
+  // Email: hide username/password when the relay trusts our IP; keep the port in step with the security mode.
+  const auth = form.elements.smtp_auth, tls = form.elements.smtp_tls, port = form.elements.smtp_port;
+  const credRows = ["smtp_user", "smtp_pass"].map((n) => form.elements[n].closest("label"));
+  const syncAuth = () => credRows.forEach((r) => { r.hidden = auth.value === "none"; });
+  auth.addEventListener("change", syncAuth); syncAuth();
+  tls.addEventListener("change", () => {
+    if (["", "25", "465", "587"].includes(port.value)) port.value = tls.value === "ssl" ? "465" : "587";
+  });
   form.onsubmit = async (e) => {
     e.preventDefault(); err.textContent = "";
+    if (form.elements.smtp_host.value.trim()) {
+      if (tls.value === "ssl" && port.value !== "465") { err.textContent = "SSL/TLS normally uses port 465. Use STARTTLS for ports 587 and 25."; return; }
+      if (tls.value === "starttls" && port.value === "465") { err.textContent = "Port 465 needs SSL/TLS, not STARTTLS."; return; }
+    }
     const v = {};
     for (const n of form.elements) {
       if (!n.name) continue;
       if (n.type === "checkbox") v[n.name] = n.checked;
       else if (n.type === "number" || n.name.endsWith("weekday") || n.name === "week_start") v[n.name] = Number(n.value);
       else if (n.name === "plaid_env" || n.name === "smtp_auth") v[n.name] = n.value;
-      else if (n.type === "password") { if (n.value) v[n.name] = n.value; }
+      else if (n.type === "password") { if (n.value && !n.closest("label")?.hidden) v[n.name] = n.value; }
       else v[n.name] = n.value.trim();
     }
     try { await api("PUT", "/api/admin/settings", v); toast("Settings saved"); refresh(); } catch (x) { err.textContent = x.message; }
