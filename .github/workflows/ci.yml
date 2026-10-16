@@ -1,0 +1,17 @@
+name: ci
+on:
+  push:
+  pull_request:
+  schedule: [{ cron: "0 12 * * 1" }]   # weekly CVE re-scan even with no commits
+permissions:
+  contents: read
+jobs:
+  test-and-audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt pytest httpx pip-audit
+      - run: python -m pytest -q
+      - run: pip-audit -r requirements.txt --strict

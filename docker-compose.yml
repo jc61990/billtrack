@@ -1,0 +1,24 @@
+services:
+  billtrack:
+    build: .
+    image: billtrack:latest
+    container_name: billtrack
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # IP of your reverse proxy as seen by the container (for correct client IPs / login throttling)
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
+      BT_DB_KEY_FILE: /run/secrets/db_key
+    secrets: [db_key]
+    ports:
+      - "127.0.0.1:8080:8080"   # localhost only; publish through a TLS reverse proxy or Tailscale
+    volumes:
+      - ./data:/data
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+secrets:
+  db_key:
+    file: ./secrets/db.key   # 64 hex chars; see README "Encryption"

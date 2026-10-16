@@ -1,0 +1,222 @@
+"""Email (SMTP over verified TLS), ntfy push, in-app inbox, and the background scheduler."""
+import asyncio
+import json
+import logging
+import smtplib
+import ssl
+import urllib.request
+from datetime import datetime, timedelta
+from email.message import EmailMessage
+from email.utils import parseaddr
+from urllib.parse import quote, urlparse
+
+from . import ledger, settings
+from .db import rows, tx
+from .recurrence import occurrences
+from .security import effective_perms, iso, now_utc
+
+log = logging.getLogger("billtrack.notify")
+
+
+def money(c: int) -> str:
+    return f"-${abs(c)/100:,.2f}" if c < 0 else f"${c/100:,.2f}"
+
+
+def _clean(s: str, n=200) -> str:
+    return "".join(ch for ch in str(s) if ch.isprintable())[:n]
+
+
+def email_ready() -> bool:
+    return bool(settings.get("smtp_host") and settings.get("smtp_from"))
+
+
+def valid_email(addr: str) -> bool:
+    name, a = parseaddr(addr or "")
+    return bool(a) and a == addr and "@" in a and len(a) <= 254 and "\n" not in a and " " not in a
+
+
+def send_email(to: str, subject: str, body: str) -> bool:
+    if not (email_ready() and valid_email(to)):
+        return False
+    msg = EmailMessage()
+    msg["Subject"], msg["From"], msg["To"] = _clean(subject), settings.get("smtp_from"), to
+    msg.set_content(body)
+    ctx = ssl.create_default_context()  # verifies cert + hostname
+    host, port = settings.get("smtp_host"), settings.get("smtp_port")
+    if settings.get("smtp_tls") == "ssl":
+        s = smtplib.SMTP_SSL(host, port, context=ctx, timeout=20)
+    else:
+        s = smtplib.SMTP(host, port, timeout=20)
+        s.starttls(context=ctx)  # raises if unsupported - credentials are never sent in clear
+    with s:
+        if settings.get("smtp_user"):
+            s.login(settings.get("smtp_user"), settings.get("smtp_pass"))
+        s.send_message(msg)
+    return True
+
+
+def send_push(topic: str, title: str, body: str, priority="default") -> bool:
+    server = settings.get("ntfy_server")
+    if not (server and topic):
+        return False
+    if urlparse(server).scheme not in ("https", "http"):
+        return False
+    req = urllib.request.Request(f"{server.rstrip('/')}/{quote(topic, safe='')}", data=body.encode()[:4000],
+                                 method="POST")
+    req.add_header("Title", _clean(title).encode("ascii", "replace").decode())
+    req.add_header("Priority", priority)
+    if settings.get("ntfy_token"):
+        req.add_header("Authorization", f"Bearer {settings.get('ntfy_token')}")
+    with urllib.request.urlopen(req, timeout=15) as r:  # noqa: S310 (scheme checked)
+        return 200 <= r.status < 300
+
+
+def prefs(user) -> dict:
+    p = {"email_alerts": True, "push_alerts": False, "ntfy_topic": "", "digest": True,
+         "bill_reminders": True, "due_alerts": True, "overdue_alerts": True, "tracker_alerts": True}
+    try:
+        p.update(json.loads(user["prefs"] or "{}"))
+    except ValueError:
+        pass
+    return p
+
+
+def inbox(con, user_id: int, title: str, body: str = "", level="info"):
+    con.execute("INSERT INTO notifications(user_id,ts,level,title,body) VALUES (?,?,?,?,?)",
+                (user_id, iso(now_utc()), level, _clean(title), _clean(body, 4000)))
+
+
+def deliver(con, user, title: str, body: str, level="info", email=True, push=True) -> dict:
+    """In-app always; email/push per user prefs. Never raises."""
+    inbox(con, user["id"], title, body, level)
+    pr, res = prefs(user), {"inbox": True}
+    if email and pr["email_alerts"] and user["email"]:
+        try:
+            res["email"] = send_email(user["email"], title, body)
+        except Exception as e:
+            log.warning("email to user %s failed: %s", user["id"], type(e).__name__)
+            res["email"] = f"error: {type(e).__name__}"
+    if push and pr["push_alerts"] and pr["ntfy_topic"]:
+        try:
+            res["push"] = send_push(pr["ntfy_topic"], title, body, "high" if level == "warn" else "default")
+        except Exception as e:
+            log.warning("push to user %s failed: %s", user["id"], type(e).__name__)
+            res["push"] = f"error: {type(e).__name__}"
+    return res
+
+
+def notify_perm(con, perm: str, title: str, body: str, level="info", pref: str | None = None):
+    for u in rows(con, "SELECT * FROM users WHERE disabled=0"):
+        if perm in effective_perms(u) and (pref is None or prefs(u).get(pref, True)):
+            deliver(con, u, title, body, level)
+
+
+def digest(con, any_day):
+    w = ledger.week(con, any_day)
+    out = [f"Week {w['start']} to {w['end']}",
+           f"Money in:  {money(w['in_cents'])}  (pay {money(w['pay_cents'])}, OT/extra {money(w['extra_cents'])})",
+           f"Money out: {money(w['out_cents'])}  (bills {money(w['bills_cents'])}, other {money(w['expenses_cents'])})",
+           f"Left over: {money(w['net_cents'])}", "", "Bills this week:"]
+    out += [f"  {b['date']}  {b['name'][:24]:<24} {money(b['amount_cents']):>11}  {b['account'] or '-'}  [{b['status']}]"
+            for b in w["bills"] if not b["skipped"]] or ["  none"]
+    return f"Weekly money: left over {money(w['net_cents'])}", "\n".join(out)
+
+
+def _already(con, uid, ref, kind) -> bool:
+    return bool(con.execute("SELECT 1 FROM alert_log WHERE user_id=? AND ref=? AND kind=?", (uid, ref, kind)).fetchone())
+
+
+def _mark(con, uid, ref, kind):
+    con.execute("INSERT OR IGNORE INTO alert_log VALUES (?,?,?,?)", (uid, ref, kind, iso(now_utc())))
+
+
+def check_once() -> None:
+    tz = settings.tz()
+    now = datetime.now(tz)
+    t = now.date()
+    with tx() as con:
+        users = [u for u in rows(con, "SELECT * FROM users WHERE disabled=0")]
+        occ = ledger.bill_occurrences(con, t - timedelta(days=1), t + timedelta(days=31))
+
+        # Bill alerts, per user, batched into one message
+        for u in users:
+            if "finance:read" not in effective_perms(u):
+                continue
+            pr, lines, refs, urgent = prefs(u), [], [], False
+            for o in occ:
+                if o["status"] == "paid":
+                    continue
+                days = (datetime.fromisoformat(o["date"]).date() - t).days
+                kind = None
+                if days == -1 and not o["autopay"] and pr["overdue_alerts"]:
+                    kind = "overdue"
+                elif days == 0 and not o["autopay"] and pr["due_alerts"]:
+                    kind = "due"
+                elif 0 < days <= o["remind_days"] and pr["bill_reminders"]:
+                    kind = "reminder"
+                ref = f"bill:{o['bill_id']}:{o['orig_date']}"
+                if not kind or _already(con, u["id"], ref, kind):
+                    continue
+                urgent |= kind != "reminder"
+                tag = {"overdue": "OVERDUE", "due": "Due today", "reminder": f"Due in {days}d"}[kind]
+                lines.append(f"{tag}: {o['name']} {money(o['amount_cents'])} on {o['date']}"
+                             f" from {o['account'] or 'no account'}{' (autopay)' if o['autopay'] else ''}")
+                refs.append((ref, kind))
+            if lines:
+                deliver(con, u, f"Bills: {len(lines)} need attention", "\n".join(lines), "warn" if urgent else "info")
+                for ref, kind in refs:
+                    _mark(con, u["id"], ref, kind)
+
+        # Weekly digest
+        ws = ledger.week_start_of(t).isoformat()
+        if now.weekday() == settings.get("digest_weekday") and now.hour >= settings.get("digest_hour"):
+            subj, body = digest(con, t)
+            for u in users:
+                if ("finance:read" in effective_perms(u) and prefs(u)["digest"]
+                        and not _already(con, u["id"], f"digest:{ws}", "digest")):
+                    deliver(con, u, subj, body)
+                    _mark(con, u["id"], f"digest:{ws}", "digest")
+
+        # Custom reminders
+        stamp = now.strftime("%Y-%m-%dT%H:%M")
+        for r in rows(con, "SELECT r.*, u.disabled FROM reminders r JOIN users u ON u.id=r.user_id "
+                           "WHERE r.active=1 AND r.next_at <= ?", (stamp,)):
+            u = next((x for x in users if x["id"] == r["user_id"]), None)
+            if u:
+                deliver(con, u, f"Reminder: {r['title']}", r["note"] or r["title"], "info", bool(r["email"]), bool(r["push"]))
+            nxt = next_reminder(r["next_at"], r["recurrence"], stamp)
+            if nxt:
+                con.execute("UPDATE reminders SET next_at=? WHERE id=?", (nxt, r["id"]))
+            else:
+                con.execute("UPDATE reminders SET active=0 WHERE id=?", (r["id"],))
+
+        ledger.snapshot_investments(con)
+
+        # Housekeeping
+        n = now_utc()
+        con.execute("DELETE FROM notifications WHERE ts < ?", (iso(n - timedelta(days=180)),))
+        con.execute("DELETE FROM audit_log WHERE ts < ?", (iso(n - timedelta(days=400)),))
+        con.execute("DELETE FROM alert_log WHERE sent_at < ?", (iso(n - timedelta(days=120)),))
+        con.execute("DELETE FROM sessions WHERE expires_at < ?", (iso(n),))
+        con.execute("DELETE FROM reset_tokens WHERE expires_at < ?", (iso(n),))
+
+
+def next_reminder(cur: str, rec: str, after: str) -> str | None:
+    if rec == "once":
+        return None
+    d = datetime.fromisoformat(cur)
+    hi = d.date() + timedelta(days=800)
+    for occ in occurrences(d.date(), rec, d.date() + timedelta(days=1), hi):
+        cand = datetime.combine(occ, d.time()).strftime("%Y-%m-%dT%H:%M")
+        if cand > after:
+            return cand
+    return None
+
+
+async def loop(interval_min: int):
+    while True:
+        try:
+            await asyncio.to_thread(check_once)
+        except Exception:
+            log.exception("scheduler run failed")
+        await asyncio.sleep(max(1, interval_min) * 60)
