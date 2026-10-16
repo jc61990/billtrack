@@ -10,6 +10,9 @@
   python -m app.manage rekey <new-key-file> re-encrypt the database with a new key
   python -m app.manage backup <out.db>      write a passphrase-encrypted backup
   python -m app.manage restore <in.db>      restore a backup (service must be stopped)
+  python -m app.manage snapshot <dir> [keep] [label]  verified copy of the DB (server key), keep newest N (default 7)
+  python -m app.manage vacuum               compact the database (service must be stopped)
+  python -m app.manage rollback <snapshot>  put an upgrade snapshot back as the live DB (service must be stopped)
 """
 import getpass
 import os
@@ -108,6 +111,28 @@ def main():
             with os.fdopen(fd, "wb") as f:
                 f.write(data)
             print(f"Encrypted backup written to {a[1]}")
+        elif a[:1] == ["snapshot"] and 2 <= len(a) <= 4:
+            path, removed = db.snapshot(a[1], int(a[2]) if len(a) > 2 else 7, a[3] if len(a) > 3 else "")
+            print(f"    Backup: {path} ({os.path.getsize(path) / 1024:.0f} KB, verified)")
+            for f in removed:
+                print(f"    Rotated out old backup: {f}")
+        elif a == ["vacuum"]:
+            before, after = db.vacuum()
+            print(f"    Compacted database: {before / 1024:.0f} KB -> {after / 1024:.0f} KB")
+        elif a[:1] == ["rollback"] and len(a) == 2:
+            import shutil
+            src = a[1]
+            if not db.SNAP_RE.match(os.path.basename(src)):
+                sys.exit("Not a BillTrack upgrade snapshot (billtrack-YYYYMMDD-HHMMSS*.db)")
+            db.connect(src).close()   # proves it opens with the current key
+            for suffix in ("-wal", "-shm"):
+                if os.path.exists(config.DB_PATH + suffix):
+                    os.remove(config.DB_PATH + suffix)
+            if os.path.exists(config.DB_PATH):
+                os.replace(config.DB_PATH, config.DB_PATH + ".before-rollback")
+            shutil.copy2(src, config.DB_PATH)
+            os.chmod(config.DB_PATH, 0o600)
+            print(f"Restored {src}. Previous database kept as {config.DB_PATH}.before-rollback. Start the service.")
         elif a[:1] == ["restore"] and len(a) == 2:
             if os.path.exists(config.DB_PATH):
                 sys.exit(f"{config.DB_PATH} exists. Stop the service and move it aside first.")

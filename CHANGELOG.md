@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.6.1 - 2026-10-16
+### Added
+- **Automatic pre-upgrade maintenance** in `setup.sh` (runs before the new code touches the database):
+  stop the service → verified backup to `/var/lib/billtrack/backups/billtrack-<timestamp>-pre-<version>.db`
+  (same server key, `quick_check` passed before it's kept) → **keep the newest 7**, delete older → **compact** the
+  live database with `VACUUM`. Checks free space first; if there isn't room, or the backup fails, it asks before
+  continuing, and a "no" leaves the database untouched and restarts the service.
+- `billtrack-manage snapshot`, `vacuum`, `rollback` (rollback validates the file and keeps the replaced database
+  as `billtrack.db.before-rollback`).
+### Notes
+- Backups aren't gzip/zstd-compressed: the data is encrypted, so compression can't shrink it. Space is saved by
+  writing compact backups (no free pages), compacting the live DB, and the 7-file rotation.
+
 ## 2.6.0 - 2026-10-16
 ### Added
 - **Home page** (new default landing page instead of Week):

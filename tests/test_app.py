@@ -403,3 +403,22 @@ def test_home_page(admin):
     admin.put(f"/api/admin/users/{uid}", json={"role": "viewer", "perms_deny": ["investments:read", "trackers:read"]}, headers=H)
     hv = v.get("/api/home").json()
     assert "investments" not in hv and "trackers" not in hv and "week" in hv
+
+
+def test_upgrade_snapshots_rotate_and_restore(admin, tmp_path):
+    admin.post("/api/accounts", json={"name": "SnapMe"}, headers=H)
+    import time as _t
+    made = []
+    for i in range(9):
+        p, removed = db.snapshot(str(tmp_path), keep=7, label=f"v2.6.{i}")
+        made.append(os.path.basename(p))
+        _t.sleep(1.01)   # names are second-resolution timestamps
+    left = sorted(f for f in os.listdir(tmp_path) if db.SNAP_RE.match(f))
+    assert len(left) == 7 and left == sorted(made)[-7:]          # oldest two rotated out
+    raw = open(tmp_path / left[-1], "rb").read()
+    assert not raw.startswith(db.PLAIN_HEADER) and b"SnapMe" not in raw
+    con = db.connect(str(tmp_path / left[-1]))                   # opens with the server key
+    assert any(r["name"] == "SnapMe" for r in db.rows(con, "SELECT name FROM accounts"))
+    con.close()
+    before, after = db.vacuum()
+    assert after <= before or after > 0

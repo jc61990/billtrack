@@ -4,7 +4,7 @@ Self-hosted bill, paycheck, savings and investment tracker built around the **we
 roles, two-factor sign-in, alerts by email and phone push, and encryption at every layer: the database on disk,
 secrets inside it, and every byte of browser traffic.
 
-![version](https://img.shields.io/badge/version-2.6.0-blue)
+![version](https://img.shields.io/badge/version-2.6.1-blue)
 
 ## Features
 
@@ -148,6 +148,9 @@ billtrack-manage gen-ics-token | gen-db-key
 billtrack-manage rekey <new.key>        # re-encrypts DB and re-seals stored secrets
 billtrack-manage backup <out.db> | restore <in.db>
 billtrack-manage encrypt-db             # 1.0 migration (setup.sh runs it)
+billtrack-manage snapshot <dir> [keep]  # verified copy with the server key, keep newest N (setup.sh does this)
+billtrack-manage vacuum                 # compact the database (service stopped)
+billtrack-manage rollback <snapshot>    # restore an upgrade snapshot (service stopped)
 ```
 
 Key rotation:
@@ -199,7 +202,7 @@ pip install -r requirements.txt pytest httpx
 export BT_DB_KEY=$(python -c 'import secrets;print(secrets.token_hex(32))') BT_COOKIE_SECURE=false
 python -m app.manage adduser dev admin
 uvicorn app.main:app --reload --port 8080
-python -m pytest -q        # 29 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
+python -m pytest -q        # 30 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
 pip-audit -r requirements.txt
 ```
 

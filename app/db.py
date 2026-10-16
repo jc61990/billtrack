@@ -323,3 +323,61 @@ def restore_backup(backup_path: str, passphrase: str, target: str, key: str) -> 
         raise
     con.close()
     os.chmod(target, 0o600)
+
+
+# ---------- upgrade snapshots (installer) ----------
+SNAP_RE = re.compile(r"^billtrack-\d{8}-\d{6}(-[A-Za-z0-9.-]+)?\.db$")
+
+
+def snapshot(out_dir: str, keep: int = 7, label: str = "") -> tuple[str, list[str]]:
+    """Consistent, compacted copy of the live database, encrypted with the same server key, then rotate so only
+    the newest `keep` snapshots remain. Verified before it replaces anything. Returns (path, removed)."""
+    from datetime import datetime
+    if label and not re.fullmatch(r"[A-Za-z0-9.-]{1,32}", label):
+        raise ValueError("bad label")
+    keep = max(1, int(keep))
+    os.makedirs(out_dir, mode=0o700, exist_ok=True)
+    key = load_key()
+    name = f"billtrack-{datetime.now().strftime('%Y%m%d-%H%M%S')}{'-' + label if label else ''}.db"
+    final, tmp = os.path.join(out_dir, name), os.path.join(out_dir, name + ".part")
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    con = connect(key=key)
+    try:
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        # sqlcipher_export writes a fresh file with no free pages: the backup is as small as the data allows
+        con.execute(f"ATTACH DATABASE ? AS bk KEY \"x'{key}'\"", (tmp,))
+        con.execute("SELECT sqlcipher_export('bk')")
+        con.execute("DETACH DATABASE bk")
+    finally:
+        con.close()
+    chk = connect(tmp, key)
+    try:
+        if chk.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+            raise RuntimeError("snapshot failed integrity check")
+        chk.execute("SELECT count(*) FROM users").fetchone()
+    finally:
+        chk.close()
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, final)
+    snaps = sorted(f for f in os.listdir(out_dir) if SNAP_RE.match(f))
+    removed = []
+    for f in snaps[:-keep]:
+        os.remove(os.path.join(out_dir, f))
+        removed.append(f)
+    return final, removed
+
+
+def vacuum(path: str | None = None) -> tuple[int, int]:
+    """Rebuild the live database to reclaim free space. Run with the service stopped. Returns (before, after) bytes."""
+    path = path or config.DB_PATH
+    size = lambda: sum(os.path.getsize(path + s) for s in ("", "-wal") if os.path.exists(path + s))
+    before = size()
+    con = connect(path)
+    try:
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        con.execute("VACUUM")
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        con.close()
+    return before, size()

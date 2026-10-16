@@ -168,6 +168,38 @@ if [[ -f "$DB_FILE" ]] && head -c 16 "$DB_FILE" | grep -q "SQLite format 3"; the
   manage encrypt-db
 fi
 
+# ---------------------------------------------------------------------------------------------------------
+# Pre-upgrade maintenance: verified backup (newest 7 kept) + compaction. Runs before the new code touches the DB.
+# ---------------------------------------------------------------------------------------------------------
+BACKUP_DIR="$DATA_DIR/backups"
+KEEP_BACKUPS=7
+if [[ -f "$DB_FILE" ]] && ! head -c 16 "$DB_FILE" | grep -q "SQLite format 3"; then
+  echo "==> Backup + compact before upgrade (keeping the newest $KEEP_BACKUPS backups)"
+  NEWVER=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$SRC_DIR/app/__init__.py")
+  DB_KB=$(du -k "$DB_FILE" | cut -f1)
+  [[ -f "$DB_FILE-wal" ]] && DB_KB=$(( DB_KB + $(du -k "$DB_FILE-wal" | cut -f1) ))
+  FREE_KB=$(df -Pk "$DATA_DIR" | awk 'NR==2{print $4}')
+  DO_BACKUP=1
+  if (( FREE_KB < DB_KB * 3 + 10240 )); then
+    echo "    Only $(( FREE_KB / 1024 )) MB free on $DATA_DIR; a backup and compaction need about $(( DB_KB * 3 / 1024 + 10 )) MB."
+    yesno "    Upgrade WITHOUT a backup?" N || { echo "Free up some space and run setup again."; exit 1; }
+    DO_BACKUP=0
+  fi
+  systemctl stop billtrack 2>/dev/null || true      # nothing writes while we copy and compact
+  if [[ $DO_BACKUP == 1 ]]; then
+    if ! manage snapshot "$BACKUP_DIR" "$KEEP_BACKUPS" "pre-$NEWVER"; then
+      echo "    !! Backup failed."
+      if ! yesno "    Continue the upgrade without a backup?" N; then
+        systemctl start billtrack 2>/dev/null || true
+        echo "Upgrade stopped before any database changes. The service was started again."
+        exit 1
+      fi
+    fi
+  fi
+  manage vacuum || echo "    (compaction skipped: $?)"
+  echo "    Backups: $BACKUP_DIR  (roll back: sudo systemctl stop billtrack && sudo billtrack-manage rollback <file>)"
+fi
+
 echo "==> systemd unit"
 cat > /etc/systemd/system/billtrack.service <<UNIT
 [Unit]
