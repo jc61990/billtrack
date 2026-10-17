@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.1 - 2026-10-17
+### Changed
+- Removed the **Add** button from the top bar. Adding is still on Home (+ Bill, + Overtime, + Spending,
+  + Reminder), on each page (Add bill, Add account, …) and in right-click / long-press menus on the calendar.
+- **Sign out** at the bottom left of the side menu (desktop) and at the bottom of **More** on phones.
+
 ## 3.0.0 - 2026-10-17
 ### Changed (breaking)
 - **Admins and users are separate.** Admins run the system only (no finance pages or data); users manage only

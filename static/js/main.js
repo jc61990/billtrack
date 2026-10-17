@@ -1,6 +1,5 @@
 import { $, api, can, el, refresh, S, setRefresh, setUnauthorizedHandler, showDialog, toast, closeMenu , fill } from "./core.js";
 import { showAuth } from "./auth.js";
-import { bankForm, billForm, cardForm, expenseForm, extraForm, reminderForm, sourceForm, trackerForm } from "./forms.js";
 import * as home from "./views/home.js";
 import * as week from "./views/week.js";
 import * as cal from "./views/calendar.js";
@@ -34,13 +33,20 @@ function nav() {
   const vs = allowed();
   const btn = (v) => el("button", { type: "button", "aria-current": S.view === v[0] ? "page" : null, onclick: () => go(v[0]) },
     v[2], v[0] === "alerts" ? el("span", { class: "badge", hidden: !S.me.unread }, S.me.unread) : null);
-  $("#sidenav").replaceChildren(...vs.map(btn));
+  $("#sidenav").replaceChildren(...vs.map(btn),
+    el("button", { type: "button", class: "signout", onclick: signOut }, "⎋ Sign out"));
   const bottom = vs.filter((v) => v[4]).slice(0, 4);
   const rest = vs.filter((v) => !bottom.includes(v));
   fill($("#tabs"), ...bottom.map(btn), rest.length ? el("button", { type: "button",
     "aria-current": rest.some((v) => v[0] === S.view) ? "page" : null, onclick: () => {
-      showDialog("More", el("div", { class: "menu" }, rest.map((v) => el("button", { type: "button", onclick: () => { $("#dlg").close(); go(v[0]); } }, v[2]))));
+      showDialog("More", el("div", { class: "menu" }, rest.map((v) => el("button", { type: "button", onclick: () => { $("#dlg").close(); go(v[0]); } }, v[2])),
+        el("button", { type: "button", class: "danger", onclick: signOut }, "⎋ Sign out")));
     } }, "More") : null);
+}
+
+async function signOut() {
+  try { await api("POST", "/api/logout"); } catch { /* signed out either way */ }
+  location.replace("/");
 }
 
 function go(view) {
@@ -50,15 +56,6 @@ function go(view) {
   refresh();
 }
 
-function addMenu() {
-  const items = [
-    can("finance:write") && ["Bill", () => billForm()], can("finance:write") && ["Overtime or extra pay", () => extraForm()],
-    can("finance:write") && ["Other spending", () => expenseForm()], can("finance:write") && ["Pay (paycheck)", () => sourceForm()],
-    can("finance:write") && ["Bank account", () => bankForm({}, "checking")], can("finance:write") && ["Credit card", () => cardForm()],
-    can("trackers:write") && ["Tracker", () => trackerForm()], can("reminders") && ["Reminder", () => reminderForm()],
-  ].filter(Boolean);
-  showDialog("Add", el("div", { class: "menu" }, items.map(([l, fn]) => el("button", { type: "button", onclick: fn }, l))));
-}
 
 let rendering = false;
 setRefresh(async () => {
@@ -72,7 +69,6 @@ setRefresh(async () => {
     if (!allowed().some((v) => v[0] === S.view)) S.view = allowed()[0][0];
     const v = VIEWS.find((x) => x[0] === S.view);
     $("#viewTitle").textContent = v[1].title;
-    $("#addBtn").hidden = !(can("finance:write") || can("trackers:write") || can("reminders")) || me.mfa_setup_required;
     $("#who").textContent = me.display_name || me.username;
     $("#bellCount").textContent = me.unread > 99 ? "99+" : me.unread; $("#bellCount").hidden = !me.unread;
     nav();
@@ -103,7 +99,6 @@ async function boot() {
 }
 
 setUnauthorizedHandler(() => { S.me = null; showAuth(boot); });
-$("#addBtn").addEventListener("click", addMenu);
 $("#bell").addEventListener("click", () => go("alerts"));
 addEventListener("hashchange", () => { const h = location.hash.slice(1); if (S.me && VIEWS.some((v) => v[0] === h) && h !== S.view) go(h); });
 // Server is the single source of truth: re-pull on focus and every minute (skipped while a dialog is open or dragging).
