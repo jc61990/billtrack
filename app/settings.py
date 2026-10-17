@@ -99,5 +99,39 @@ def reset_cache():
         _cache = None
 
 
-def tz() -> ZoneInfo:
+import contextvars
+
+_user_tz: contextvars.ContextVar = contextvars.ContextVar("bt_user_tz", default=None)
+
+
+def valid_tz(name: str) -> bool:
+    try:
+        ZoneInfo(name)
+        return bool(name) and len(name) <= 64
+    except (ZoneInfoNotFoundError, ValueError):
+        return False
+
+
+def system_tz() -> ZoneInfo:
     return ZoneInfo(get("timezone"))
+
+
+def tz() -> ZoneInfo:
+    """The time zone for whoever this work is for: the signed-in user's (set per request / per alert), else the
+    system default from Admin > Settings."""
+    u = _user_tz.get()
+    return ZoneInfo(u) if u else system_tz()
+
+
+def user_tz_name(prefs: dict) -> str:
+    n = (prefs or {}).get("timezone") or ""
+    return n if valid_tz(n) else ""
+
+
+def use_tz(name: str | None):
+    """Set the zone for the current request/task; returns a token for reset_tz."""
+    return _user_tz.set(name if name and valid_tz(name) else None)
+
+
+def reset_tz(token):
+    _user_tz.reset(token)

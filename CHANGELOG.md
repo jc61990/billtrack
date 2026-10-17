@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.10.0 - 2026-10-17
+### Changed
+- **Per-user time zone, detected from the browser.** On sign-in the app compares the device's zone with the
+  user's saved one and updates it (unless they chose one by hand). Every API request is evaluated in that user's
+  zone ("today", overdue/due-soon, week bounds, paydays, Home, Overview), set in middleware before any endpoint
+  runs and cached per credential for 60 s.
+- Scheduler works per user: bill alerts, the weekly digest (configured weekday/hour) and custom reminders use each
+  person's local wall clock.
+- Settings → Profile: "Use this device's time zone" (default on) or pick any IANA zone. Admin → Settings labels
+  the system zone as the default for people without one and shows this browser's zone.
+- `.env.example` default zone changed to America/New_York (only a fallback now).
+### Added
+- `PUT /api/me/timezone`; `/api/me` returns `timezone` (effective) and `system_timezone`.
+
 ## 2.9.1 - 2026-10-17
 ### Fixed
 - `setup.sh` stopped after a successful passphrase migration with "Wrong database key": the user-count check and

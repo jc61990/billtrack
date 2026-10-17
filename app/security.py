@@ -92,6 +92,44 @@ class Principal:
         return perm in self.perms
 
 
+# credential hash -> (time zone name, expiry). Lets the middleware set the user's zone before any endpoint runs.
+_tz_cache: dict[str, tuple[str, float]] = {}
+
+
+def clear_tz_cache():
+    _tz_cache.clear()
+
+
+def tz_for_request(headers) -> str:
+    """User's time zone for this request ('' = system default). Cheap: cached per credential for 60 s."""
+    auth = headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        h, q = crypto.token_hash(auth[7:].strip()), ("SELECT u.prefs FROM api_tokens t JOIN users u ON u.id=t.user_id "
+                                                     "WHERE t.token_hash=? AND t.revoked=0")
+    else:
+        tok = None
+        for part in headers.get("cookie", "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == COOKIE:
+                tok = v
+        if not tok or len(tok) > 200:
+            return ""
+        h, q = crypto.token_hash(tok), "SELECT u.prefs FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=?"
+    hit = _tz_cache.get(h)
+    if hit and hit[1] > time.monotonic():
+        return hit[0]
+    try:
+        with tx() as con:
+            r = con.execute(q, (h,)).fetchone()
+        name = settings.user_tz_name(json.loads(r["prefs"] or "{}")) if r else ""
+    except Exception:
+        name = ""
+    if len(_tz_cache) > 5000:
+        _tz_cache.clear()
+    _tz_cache[h] = (name, time.monotonic() + 60)
+    return name
+
+
 def _from_bearer(tok: str) -> Principal:
     h = crypto.token_hash(tok)
     with tx() as con:

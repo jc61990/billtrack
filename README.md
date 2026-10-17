@@ -4,7 +4,7 @@ Self-hosted bill, paycheck, savings and investment tracker built around the **we
 roles, two-factor sign-in, alerts by email and phone push, and encryption at every layer: the database on disk,
 secrets inside it, and every byte of browser traffic.
 
-![version](https://img.shields.io/badge/version-2.9.1-blue)
+![version](https://img.shields.io/badge/version-2.10.0-blue)
 
 ## Features
 
@@ -163,6 +163,15 @@ sudo systemctl stop billtrack && billtrack-manage rekey /etc/billtrack/db.key.ne
 sudo mv /etc/billtrack/db.key.new /etc/billtrack/db.key && sudo systemctl start billtrack
 ```
 
+## Time zones
+
+Each person's dates follow **their own time zone**, picked up automatically from the device they use (Settings →
+Profile → *Use this device's time zone*, on by default; untick it to choose one by hand). The server works out
+"today", overdue bills, this week, paydays, reminder times and when that person's alerts and weekly summary go out
+in that zone. Timestamps (last sync, sign-ins, audit log) are always shown in your browser's local time.
+Admin → Settings → *Default time zone* only applies to people who haven't got one yet and to shared system tasks
+(daily snapshots, account alerts).
+
 ## Encryption keys and disaster recovery
 
 ### Keys
@@ -278,7 +287,7 @@ pip install -r requirements.txt pytest httpx
 export BT_DB_KEY=$(python -c 'import secrets;print(secrets.token_hex(32))') BT_COOKIE_SECURE=false
 python -m app.manage adduser dev admin
 uvicorn app.main:app --reload --port 8080
-python -m pytest -q        # 42 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
+python -m pytest -q        # 43 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
 pip-audit -r requirements.txt
 ```
 

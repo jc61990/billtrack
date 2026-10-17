@@ -83,6 +83,12 @@ setRefresh(async () => {
 async function boot() {
   try {
     S.me = await api("GET", "/api/me");
+    // Follow this device's time zone unless the user picked one by hand
+    const device = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (device && S.me.prefs.tz_auto !== false && S.me.prefs.timezone !== device) {
+      const r = await api("PUT", "/api/me/timezone", { timezone: device }).catch(() => null);
+      if (r?.ok) S.me = await api("GET", "/api/me");
+    }
   } catch { return; }
   S.perms = new Set(S.me.perms);
   S.day ||= S.me.today; S.month ||= S.me.today.slice(0, 7);

@@ -12,7 +12,7 @@ export async function render(root) {
     me.mfa_setup_required ? el("div", { class: "banner warn", role: "alert" },
       "Your administrator requires two-factor authentication. Turn it on below to unlock the app.") : null,
     profile(me), alertsPrefs(me), security(me, sessions), apiAccess(tokens), calendarFeed(me),
-    el("p", { class: "muted" }, `BillTrack ${me.version} · signed in as ${me.username} (${me.role})`));
+    el("p", { class: "muted" }, `BillTrack ${me.version} · signed in as ${me.username} (${me.role}) · time zone ${me.timezone}`));
 }
 
 function profile(me) {
@@ -22,13 +22,25 @@ function profile(me) {
   const email = el("input", { type: "email", name: "email", value: me.email, maxlength: 254, autocomplete: "email",
     oninput: () => { pwRow.hidden = email.value === me.email; } });
   const name = el("input", { name: "display_name", value: me.display_name, maxlength: 60 });
+  const device = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const auto = el("input", { type: "checkbox", checked: me.prefs.tz_auto !== false });
+  const zones = (Intl.supportedValuesOf ? Intl.supportedValuesOf("timeZone") : [device]);
+  const zone = el("select", { "aria-label": "Time zone" }, zones.map((z) => el("option", { value: z, selected: z === (me.prefs.timezone || me.timezone) }, z.replace(/_/g, " "))));
+  const zoneRow = el("label", {}, "Time zone", zone, el("span", { class: "hint" }, `System default: ${me.system_timezone}`));
+  const syncTz = () => { zoneRow.hidden = auto.checked; };
+  auto.addEventListener("change", syncTz); syncTz();
   const f = el("form", { class: "stack" }, el("label", {}, "Display name", name), el("label", {}, "Email (alerts and password resets)", email),
-    pwRow, err, el("button", { type: "submit", class: "primary" }, "Save profile"));
+    pwRow,
+    el("label", { class: "check" }, auto, `Use this device's time zone (${device.replace(/_/g, " ")})`),
+    zoneRow,
+    el("p", { class: "hint" }, "Your time zone decides what \"today\" is: overdue bills, this week, paydays, reminder times and when your alerts go out."),
+    err, el("button", { type: "submit", class: "primary" }, "Save profile"));
   f.onsubmit = async (e) => {
     e.preventDefault(); err.textContent = "";
     try {
       await api("PUT", "/api/me", { display_name: name.value, email: email.value.trim(),
-        current_password: email.value.trim() !== me.email ? pw.value : null, prefs: me.prefs });
+        current_password: email.value.trim() !== me.email ? pw.value : null,
+        prefs: { ...me.prefs, tz_auto: auto.checked, timezone: auto.checked ? device : zone.value } });
       toast("Profile saved"); refresh();
     } catch (x) { err.textContent = x.message; }
   };
@@ -57,7 +69,7 @@ function alertsPrefs(me) {
       } }, "Send test")));
   f.onsubmit = async (e) => {
     e.preventDefault(); err.textContent = "";
-    const prefs = { ntfy_topic: topic.value.trim() };
+    const prefs = { ...me.prefs, ntfy_topic: topic.value.trim() };
     for (const k of ["email_alerts", "push_alerts", "bill_reminders", "due_alerts", "overdue_alerts", "digest", "tracker_alerts", "balance_alerts"])
       prefs[k] = f.elements[k].checked;
     try { await api("PUT", "/api/me", { display_name: me.display_name, email: me.email, prefs }); toast("Alert settings saved"); refresh(); }

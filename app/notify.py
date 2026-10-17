@@ -78,7 +78,7 @@ def send_push(topic: str, title: str, body: str, priority="default") -> bool:
 def prefs(user) -> dict:
     p = {"email_alerts": True, "push_alerts": False, "ntfy_topic": "", "digest": True,
          "bill_reminders": True, "due_alerts": True, "overdue_alerts": True, "tracker_alerts": True,
-         "balance_alerts": True}
+         "balance_alerts": True, "timezone": "", "tz_auto": True}
     try:
         p.update(json.loads(user["prefs"] or "{}"))
     except ValueError:
@@ -169,65 +169,75 @@ def _mark(con, uid, ref, kind):
     con.execute("INSERT OR IGNORE INTO alert_log VALUES (?,?,?,?)", (uid, ref, kind, iso(now_utc())))
 
 
+def _user_clock(u):
+    """(now, today) in the user's own time zone (system default if they haven't got one)."""
+    z = settings.user_tz_name(prefs(u)) or settings.get("timezone")
+    tok = settings.use_tz(z)
+    try:
+        now = datetime.now(settings.tz())
+    finally:
+        settings.reset_tz(tok)
+    return now, now.date(), z
+
+
 def check_once() -> None:
-    tz = settings.tz()
-    now = datetime.now(tz)
-    t = now.date()
     with tx() as con:
         users = [u for u in rows(con, "SELECT * FROM users WHERE disabled=0")]
-        occ = ledger.bill_occurrences(con, t - timedelta(days=1), t + timedelta(days=31))
+        sys_today = datetime.now(settings.system_tz()).date()
+        # wide enough to cover every user's "today" (zones differ by up to ~1 day)
+        occ = ledger.bill_occurrences(con, sys_today - timedelta(days=2), sys_today + timedelta(days=32))
+        reminders = rows(con, "SELECT * FROM reminders WHERE active=1")
 
-        # Bill alerts, per user, batched into one message
         for u in users:
-            if "finance:read" not in effective_perms(u):
-                continue
-            pr, lines, refs, urgent = prefs(u), [], [], False
-            for o in occ:
-                if o["status"] == "paid":
-                    continue
-                days = (datetime.fromisoformat(o["date"]).date() - t).days
-                kind = None
-                if days == -1 and not o["autopay"] and pr["overdue_alerts"]:
-                    kind = "overdue"
-                elif days == 0 and not o["autopay"] and pr["due_alerts"]:
-                    kind = "due"
-                elif 0 < days <= o["remind_days"] and pr["bill_reminders"]:
-                    kind = "reminder"
-                ref = f"bill:{o['bill_id']}:{o['orig_date']}"
-                if not kind or _already(con, u["id"], ref, kind):
-                    continue
-                urgent |= kind != "reminder"
-                tag = {"overdue": "OVERDUE", "due": "Due today", "reminder": f"Due in {days}d"}[kind]
-                lines.append(f"{tag}: {o['name']} {money(o['amount_cents'])} on {o['date']}"
-                             f" from {o['account'] or 'no account'}{' (autopay)' if o['autopay'] else ''}")
-                refs.append((ref, kind))
-            if lines:
-                deliver(con, u, f"Bills: {len(lines)} need attention", "\n".join(lines), "warn" if urgent else "info")
-                for ref, kind in refs:
-                    _mark(con, u["id"], ref, kind)
+            now, t, zone = _user_clock(u)
+            tok = settings.use_tz(zone)          # anything computed for this user uses their zone
+            try:
+                # Bill alerts, batched into one message
+                if "finance:read" in effective_perms(u):
+                    pr, lines, refs, urgent = prefs(u), [], [], False
+                    for o in occ:
+                        if o["status"] in ("paid", "skipped"):
+                            continue
+                        days = (datetime.fromisoformat(o["date"]).date() - t).days
+                        kind = None
+                        if days == -1 and not o["autopay"] and pr["overdue_alerts"]:
+                            kind = "overdue"
+                        elif days == 0 and not o["autopay"] and pr["due_alerts"]:
+                            kind = "due"
+                        elif 0 < days <= o["remind_days"] and pr["bill_reminders"]:
+                            kind = "reminder"
+                        ref = f"bill:{o['bill_id']}:{o['orig_date']}"
+                        if not kind or _already(con, u["id"], ref, kind):
+                            continue
+                        urgent |= kind != "reminder"
+                        tag = {"overdue": "OVERDUE", "due": "Due today", "reminder": f"Due in {days}d"}[kind]
+                        lines.append(f"{tag}: {o['name']} {money(o['amount_cents'])} on {o['date']}"
+                                     f" from {o['account'] or 'no account'}{' (autopay)' if o['autopay'] else ''}")
+                        refs.append((ref, kind))
+                    if lines:
+                        deliver(con, u, f"Bills: {len(lines)} need attention", "\n".join(lines), "warn" if urgent else "info")
+                        for ref, kind in refs:
+                            _mark(con, u["id"], ref, kind)
 
-        # Weekly digest
-        ws = ledger.week_start_of(t).isoformat()
-        if now.weekday() == settings.get("digest_weekday") and now.hour >= settings.get("digest_hour"):
-            subj, body = digest(con, t)
-            for u in users:
-                if ("finance:read" in effective_perms(u) and prefs(u)["digest"]
-                        and not _already(con, u["id"], f"digest:{ws}", "digest")):
-                    deliver(con, u, subj, body)
-                    _mark(con, u["id"], f"digest:{ws}", "digest")
+                    # Weekly digest at the configured weekday/hour in the user's own zone
+                    ws = ledger.week_start_of(t).isoformat()
+                    if (now.weekday() == settings.get("digest_weekday") and now.hour >= settings.get("digest_hour")
+                            and prefs(u)["digest"] and not _already(con, u["id"], f"digest:{ws}", "digest")):
+                        subj, body = digest(con, t)
+                        deliver(con, u, subj, body)
+                        _mark(con, u["id"], f"digest:{ws}", "digest")
 
-        # Custom reminders
-        stamp = now.strftime("%Y-%m-%dT%H:%M")
-        for r in rows(con, "SELECT r.*, u.disabled FROM reminders r JOIN users u ON u.id=r.user_id "
-                           "WHERE r.active=1 AND r.next_at <= ?", (stamp,)):
-            u = next((x for x in users if x["id"] == r["user_id"]), None)
-            if u:
-                deliver(con, u, f"Reminder: {r['title']}", r["note"] or r["title"], "info", bool(r["email"]), bool(r["push"]))
-            nxt = next_reminder(r["next_at"], r["recurrence"], stamp)
-            if nxt:
-                con.execute("UPDATE reminders SET next_at=? WHERE id=?", (nxt, r["id"]))
-            else:
-                con.execute("UPDATE reminders SET active=0 WHERE id=?", (r["id"],))
+                # Custom reminders: their times are the user's local wall-clock times
+                stamp = now.strftime("%Y-%m-%dT%H:%M")
+                for r in [x for x in reminders if x["user_id"] == u["id"] and x["next_at"] <= stamp]:
+                    deliver(con, u, f"Reminder: {r['title']}", r["note"] or r["title"], "info", bool(r["email"]), bool(r["push"]))
+                    nxt = next_reminder(r["next_at"], r["recurrence"], stamp)
+                    if nxt:
+                        con.execute("UPDATE reminders SET next_at=? WHERE id=?", (nxt, r["id"]))
+                    else:
+                        con.execute("UPDATE reminders SET active=0 WHERE id=?", (r["id"],))
+            finally:
+                settings.reset_tz(tok)
 
         account_alerts(con)
         ledger.snapshot_investments(con)

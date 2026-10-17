@@ -13,6 +13,7 @@ import secrets
 
 from . import __version__, channel, config, crypto, db, ledger, notify, settings
 from .routes import admin, auth, finance, home, me, plaid as plaid_routes, trackers
+from . import security
 from .security import Principal, Throttle, client_ip, require
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -98,7 +99,15 @@ async def guard(request: Request, call_next):
             if not origin_allowed(request.url.scheme, request.headers.get("host", ""), request.headers.get("origin"),
                                   request.headers.get("x-forwarded-host")):
                 return JSONResponse({"detail": "Origin not allowed"}, 403)
-    resp = await call_next(request)
+    # work out dates in the signed-in user's own time zone (falls back to the system default)
+    tzname = ""
+    if path.startswith("/api/") and not db.locked():
+        tzname = await asyncio.to_thread(security.tz_for_request, request.headers)
+    tz_token = settings.use_tz(tzname)
+    try:
+        resp = await call_next(request)
+    finally:
+        settings.reset_tz(tz_token)
     h = resp.headers
     if "content-security-policy" not in h:
         h["Content-Security-Policy"] = CSP

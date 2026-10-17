@@ -34,7 +34,8 @@ def me(p: Principal = Self):
             "role": u["role"], "perms": sorted(p.perms), "totp_enabled": bool(u["totp_enabled"]),
             "mfa_setup_required": p.mfa_setup_required, "prefs": notify.prefs(u), "unread": unread,
             "version": __version__, "week_start": settings.get("week_start"), "today": ledger.today().isoformat(),
-            "timezone": settings.get("timezone"), "ics": bool(config.ICS_TOKEN),
+            "timezone": settings.user_tz_name(notify.prefs(u)) or settings.get("timezone"),
+            "system_timezone": settings.get("timezone"), "ics": bool(config.ICS_TOKEN),
             "email_ready": notify.email_ready(), "push_server": settings.get("ntfy_server"), "via": p.via}
 
 
@@ -48,6 +49,8 @@ class Prefs(In):
     overdue_alerts: bool = True
     tracker_alerts: bool = True
     balance_alerts: bool = True
+    timezone: Annotated[str, StringConstraints(max_length=64)] = ""   # "" = system default
+    tz_auto: bool = True                                               # follow this browser's zone
 
 
 class MeIn(In):
@@ -59,6 +62,10 @@ class MeIn(In):
 
 @r.put("/me")
 def update_me(body: MeIn, request: Request, p: Principal = SelfSession):
+    if body.prefs.timezone and not settings.valid_tz(body.prefs.timezone):
+        raise HTTPException(422, "Unknown time zone")
+    from ..security import clear_tz_cache
+    clear_tz_cache()
     with tx() as con:
         u = _user(con, p.user_id)
         if body.email != u["email"]:
@@ -73,6 +80,27 @@ def update_me(body: MeIn, request: Request, p: Principal = SelfSession):
             audit(con, request, "email changed")
         con.execute("UPDATE users SET display_name=?, email=?, prefs=? WHERE id=?",
                     (body.display_name, body.email, json.dumps(body.prefs.model_dump()), p.user_id))
+    return {"ok": True}
+
+
+class TzIn(In):
+    timezone: Annotated[str, StringConstraints(min_length=1, max_length=64)]
+
+
+@r.put("/me/timezone")
+def set_timezone(body: TzIn, p: Principal = Self):
+    """Called by the browser when it notices its zone differs (only if the user lets it follow the device)."""
+    if not settings.valid_tz(body.timezone):
+        raise HTTPException(422, "Unknown time zone")
+    with tx() as con:
+        u = _user(con, p.user_id)
+        pr = notify.prefs(u)
+        if not pr.get("tz_auto", True):
+            return {"ok": False, "reason": "time zone is set manually"}
+        pr["timezone"] = body.timezone
+        con.execute("UPDATE users SET prefs=? WHERE id=?", (json.dumps(pr), p.user_id))
+    from ..security import clear_tz_cache
+    clear_tz_cache()
     return {"ok": True}
 
 

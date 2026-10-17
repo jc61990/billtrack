@@ -516,3 +516,32 @@ def test_setup_sh_opens_db_only_through_shared_env():
     offenders = [ln for ln in src.splitlines() if "BT_DB_KEY_FILE=" in ln
                  and not re.match(r"\s*(BT_ENV=\(|ENVV=\(|Environment=)", ln)]
     assert offenders == [], offenders
+
+
+def test_user_time_zone(admin):
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+    settings.update({"timezone": "Pacific/Kiritimati"})            # UTC+14
+    try:
+        assert admin.put("/api/me/timezone", json={"timezone": "Mars/Olympus"}, headers=H).status_code == 422
+        assert admin.put("/api/me/timezone", json={"timezone": "Pacific/Pago_Pago"}, headers=H).json()["ok"]   # UTC-11
+        me = admin.get("/api/me").json()
+        assert me["timezone"] == "Pacific/Pago_Pago" and me["system_timezone"] == "Pacific/Kiritimati"
+        assert me["today"] == _dt.now(ZoneInfo("Pacific/Pago_Pago")).date().isoformat()
+        assert me["today"] != _dt.now(ZoneInfo("Pacific/Kiritimati")).date().isoformat()   # 25 h apart: always differs
+        w = admin.get("/api/week").json()
+        assert w["start"] <= me["today"] <= w["end"]
+        # manual choice wins over the device
+        p = me["prefs"]; p.update(tz_auto=False, timezone="Europe/London")
+        admin.put("/api/me", json={"display_name": "", "email": me["email"], "prefs": p}, headers=H)
+        assert admin.put("/api/me/timezone", json={"timezone": "Asia/Tokyo"}, headers=H).json()["ok"] is False
+        assert admin.get("/api/me").json()["timezone"] == "Europe/London"
+        # reminders fire on the user's wall clock, not the server default
+        local_now = _dt.now(ZoneInfo("Europe/London")).strftime("%Y-%m-%dT%H:%M")
+        rid = admin.post("/api/reminders", json={"title": "TZ check", "next_at": local_now}, headers=H).json()["id"]
+        notify.check_once()
+        assert not [r for r in admin.get("/api/reminders").json() if r["id"] == rid][0]["active"]
+    finally:
+        settings.update({"timezone": "America/Chicago"})
+        p = admin.get("/api/me").json()["prefs"]; p.update(tz_auto=True, timezone="")
+        admin.put("/api/me", json={"display_name": "", "email": "jc@example.com", "prefs": p}, headers=H)
