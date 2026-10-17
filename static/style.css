@@ -321,3 +321,5 @@ dialog h3 { margin: 0 0 1rem; font-size: 1.1rem; }
 .disk i.bt { background: var(--in); }
 .list.maint li { align-items: flex-start; }
 .list.maint li button { flex: none; }
+/* connect page: nothing of ours should sit above Plaid's full-screen frame */
+iframe[id^="plaid-link-iframe"] { z-index: 2147483647 !important; }

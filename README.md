@@ -4,7 +4,7 @@ Self-hosted bill, paycheck, savings and investment tracker built around the **we
 roles, two-factor sign-in, alerts by email and phone push, and encryption at every layer: the database on disk,
 secrets inside it, and every byte of browser traffic.
 
-![version](https://img.shields.io/badge/version-2.8.2-blue)
+![version](https://img.shields.io/badge/version-2.8.3-blue)
 
 ## Features
 
@@ -195,7 +195,7 @@ Security: read-only (Transactions product only); only `production.plaid.com` / `
 over verified TLS, with no extra Python dependency; access tokens and the Plaid secret are AES-GCM sealed in the
 encrypted database and never sent to browsers; only admins can link banks (never via API tokens); every link,
 mapping, sync and unlink is in the audit log. Plaid's Link script loads **only** on `/connect.html`, which has its
-own content-security policy allowing `cdn.plaid.com`; the rest of the app still allows no third-party code.
+own content-security policy allowing `cdn.plaid.com` (plus inline styles, which Plaid's full-screen frame needs); the rest of the app still allows no third-party code.
 
 ## Alerts
 - **Email:** Admin → Settings → Email. TLS is mandatory and certificates are verified. Gmail: `smtp.gmail.com`,
@@ -238,7 +238,7 @@ pip install -r requirements.txt pytest httpx
 export BT_DB_KEY=$(python -c 'import secrets;print(secrets.token_hex(32))') BT_COOKIE_SECURE=false
 python -m app.manage adduser dev admin
 uvicorn app.main:app --reload --port 8080
-python -m pytest -q        # 35 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
+python -m pytest -q        # 36 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
 pip-audit -r requirements.txt
 ```
 

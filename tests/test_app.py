@@ -496,3 +496,14 @@ def test_smtp_no_auth_relay(admin, monkeypatch):
         assert admin.put("/api/admin/settings", json={"smtp_auth": "plain"}, headers=H).status_code == 422
     finally:
         settings.update({"smtp_host": "", "smtp_from": "", "smtp_user": "", "smtp_helo": "", "smtp_auth": "password"})
+
+
+def test_connect_page_csp_scoped():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    c = TestClient(app)
+    connect = c.get("/connect.html").headers["content-security-policy"]
+    main = c.get("/").headers["content-security-policy"]
+    assert "cdn.plaid.com" in connect and "'unsafe-inline'" in connect.split("style-src")[1].split(";")[0]
+    assert "plaid" not in main and "unsafe-inline" not in main            # main app unchanged
+    assert "unsafe" not in connect.split("script-src")[1].split(";")[0]    # scripts still locked down

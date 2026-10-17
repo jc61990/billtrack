@@ -172,7 +172,10 @@ def index():
 _CONNECT = (STATIC / "connect.html").read_text()
 # Plaid Link needs its script + iframe from cdn.plaid.com and an OAuth pop-up that can talk back to this window.
 # Only this page gets that; the main app keeps the strict self-only policy.
-CONNECT_CSP = ("default-src 'self'; script-src 'self' 'nonce-{n}' https://cdn.plaid.com; style-src 'self'; "
+# style-src 'unsafe-inline': Plaid sizes/positions its full-screen Link frame with inline styles; without it the
+# frame renders as a small box (seen on iPhone). Scripts stay nonce/host-locked, so this can't run code.
+CONNECT_CSP = ("default-src 'self'; script-src 'self' 'nonce-{n}' https://cdn.plaid.com; "
+               "style-src 'self' 'unsafe-inline'; font-src 'self' https://*.plaid.com; "
                "img-src 'self' data: https://*.plaid.com; connect-src 'self' https://*.plaid.com; "
                "frame-src https://cdn.plaid.com https://*.plaid.com; object-src 'none'; base-uri 'none'; "
                "form-action 'self'; frame-ancestors 'none'")

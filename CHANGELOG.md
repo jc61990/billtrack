@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.8.3 - 2026-10-16
+### Fixed
+- Plaid Link showed as a small box at the bottom of the screen on iPhone instead of full screen. Plaid positions
+  its frame with inline styles, which the connect page's content-security policy blocked. `/connect.html` now
+  allows inline *styles* (`style-src 'self' 'unsafe-inline'`) and Plaid fonts; scripts remain nonce- and
+  host-locked, and the main app's policy is unchanged (covered by a new test).
+
 ## 2.8.2 - 2026-10-16
 ### Changed
 - Email settings: choosing **Sign in: None** hides the username and password fields (saved values are kept but
