@@ -24,7 +24,7 @@ COOKIE_SECURE = _bool("BT_COOKIE_SECURE", True)        # false only for plain-HT
 ICS_TOKEN = os.getenv("BT_ICS_TOKEN", "")              # blank disables calendar feed
 ALLOWED_ORIGINS = [o.strip().rstrip("/") for o in os.getenv("BT_ALLOWED_ORIGINS", "").split(",") if o.strip()]
 CHECK_INTERVAL_MIN = _int("BT_CHECK_INTERVAL_MIN", 15)
-RATE_LIMIT_PER_MIN = _int("BT_RATE_LIMIT_PER_MIN", 300)
+RATE_LIMIT_PER_MIN = _int("BT_RATE_LIMIT_PER_MIN", 1200)   # per IP; a busy page makes several calls per click
 # Browser API traffic must use the encrypted channel (/api/hs + /api/x). Bearer-token scripts are exempt.
 REQUIRE_CHANNEL = _bool("BT_REQUIRE_CHANNEL", True)
 

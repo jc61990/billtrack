@@ -91,34 +91,51 @@ setInterval(() => {
     : `Still there? Signing out in ${mmss(idleMs)} because nothing has happened for a while.`;
 }, 1000);
 
+let navTimer = null;
 function go(view) {
   if (!allowed().some((v) => v[0] === view)) view = allowed()[0][0];
   S.view = view;
   if (location.hash.slice(1) !== view) history.replaceState(null, "", "#" + view);
-  refresh();
+  // show the choice instantly; load once the clicking settles (a burst of clicks = one load)
+  const v = VIEWS.find((x) => x[0] === view);
+  $("#viewTitle").textContent = typeof v[2] === "function" ? v[2]() : v[1].title;
+  nav();
+  clearTimeout(navTimer);
+  navTimer = setTimeout(() => runRefresh(true), 120);
 }
 
-
-let rendering = false;
-setRefresh(async () => {
-  if (!S.me || rendering) return;
-  rendering = true;
+// Rendering: only the newest request ever draws. Each render gets its own container; an older render that finishes
+// late writes into a container that's no longer on the page, so it can't overwrite what you clicked last.
+let gen = 0;
+const shared = { at: 0 };
+async function runRefresh(light = false) {
+  if (!S.me) return;
+  const my = ++gen;
   closeMenu();
   try {
-    const me = await api("GET", "/api/me");
-    S.me = me; S.perms = new Set(me.perms);
-    if (can("finance:read")) [S.accounts, S.sources] = await Promise.all([api("GET", "/api/accounts"), api("GET", "/api/income-sources")]);
+    // Who you are, your accounts and pay are reused for 20 s while you're just moving between pages.
+    if (!light || Date.now() - shared.at > 20000) {
+      const me = await api("GET", "/api/me");
+      if (my !== gen) return;
+      S.me = me; S.perms = new Set(me.perms);
+      if (can("finance:read")) [S.accounts, S.sources] = await Promise.all([api("GET", "/api/accounts"), api("GET", "/api/income-sources")]);
+      if (my !== gen) return;
+      shared.at = Date.now();
+    }
     if (!allowed().some((v) => v[0] === S.view)) S.view = allowed()[0][0];
     const v = VIEWS.find((x) => x[0] === S.view);
     $("#viewTitle").textContent = typeof v[2] === "function" ? v[2]() : v[1].title;
-    $("#who").textContent = me.display_name || me.username;
-    $("#bellCount").textContent = me.unread > 99 ? "99+" : me.unread; $("#bellCount").hidden = !me.unread;
+    $("#who").textContent = S.me.display_name || S.me.username;
+    $("#bellCount").textContent = S.me.unread > 99 ? "99+" : S.me.unread; $("#bellCount").hidden = !S.me.unread;
     nav();
-    const root = $("#view");
-    await v[1].render(root);
-  } catch (e) { if (e.message !== "Sign in required") toast(e.message, true); }
-  finally { rendering = false; }
-});
+    const host = el("div", { class: "view-host" });
+    $("#view").replaceChildren(host);
+    await v[1].render(host);
+  } catch (e) {
+    if (my === gen && e.message !== "Sign in required") toast(e.message, true);
+  }
+}
+setRefresh(() => runRefresh(false));
 
 async function boot() {
   try {

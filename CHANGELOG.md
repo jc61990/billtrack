@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.5.1 - 2026-10-17
+### Fixed
+- **Clicking quickly broke the page.** Two causes, both reproduced:
+  - Every click loaded the page from scratch (who you are, accounts, pay, plus the page's data), so fast clicking
+    hit the per-IP rate limit (300/min) and requests failed with "Rate limit exceeded".
+  - A slower, earlier page could finish after the one you clicked last and draw over it (e.g. Bank links content
+    under a Net worth title after clicking Income).
+- Now: the title and menu highlight change instantly, the page loads once the clicking settles (bursts are merged),
+  only the newest load is ever drawn (each load gets its own container; late ones land off-screen), and the shared
+  account data is reused for 20 s while moving between pages. 80 clicks at 8/s: 311 → 141 requests, no errors,
+  correct page. 150 clicks at 40/s: 1 request, correct page.
+- Default rate limit raised to 1200 requests/min per IP; setup.sh updates the old default 300 in an existing env
+  file (a value you chose yourself is left alone).
+
 ## 3.5.0 - 2026-10-17
 ### Added
 - **Admin → HTTPS certificate** (left menu):
