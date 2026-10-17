@@ -516,6 +516,104 @@ def revoke_code(cid: int, request: Request, p: Principal = Admin):
     return {"ok": True}
 
 
+# ---------- HTTPS certificate (applied by the root-side agent, app/tlsagent.py) ----------
+def _spool():
+    from .. import config as _c
+    return os.getenv("BT_TLS_SPOOL") or os.path.join(os.path.dirname(os.path.abspath(_c.DB_PATH)), "tls")
+
+
+def _queue(req: dict, request: Request, what: str):
+    import secrets as _s
+    rq = os.path.join(_spool(), "requests")
+    os.makedirs(rq, mode=0o700, exist_ok=True)
+    if any(f.endswith(".json") for f in os.listdir(rq)):
+        raise HTTPException(409, "A certificate job is already waiting. Give it a minute.")
+    req["id"] = _s.token_hex(6)
+    path = os.path.join(rq, f"{int(_time.time())}-{req['id']}.json")
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
+        json.dump(req, f)
+    with tx() as con:
+        audit(con, request, "certificate change requested", what)
+    return {"queued": True, "id": req["id"]}
+
+
+@r.get("/tls")
+def tls_status(p: Principal = Admin):
+    sp = _spool()
+    try:
+        st = json.load(open(os.path.join(sp, "status.json")))
+    except (OSError, ValueError):
+        st = {"mode": "self", "state": "unknown",
+              "message": "No certificate status yet. If this stays empty, re-run sudo ./setup.sh (it installs the certificate helper)."}
+    rq = os.path.join(sp, "requests")
+    st["pending"] = os.path.isdir(rq) and any(f.endswith(".json") for f in os.listdir(rq))
+    return st
+
+
+DomainT = Annotated[str, StringConstraints(strip_whitespace=True, to_lower=True, max_length=253,
+                                           pattern=r"^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$")]
+
+
+class LEIn(In):
+    domains: Annotated[list[DomainT], Field(min_length=1, max_length=10)]
+    email: Email
+    challenge: Literal["http", "cloudflare"] = "http"
+    cf_token: Annotated[str, StringConstraints(strip_whitespace=True, max_length=100, pattern=r"^[A-Za-z0-9_\-]*$")] = ""
+    staging: bool = False
+
+
+@r.post("/tls/letsencrypt")
+def tls_letsencrypt(body: LEIn, request: Request, p: Principal = Admin):
+    if not notify.valid_email(body.email):
+        raise HTTPException(422, "Enter a valid email")
+    if body.challenge == "cloudflare" and len(body.cf_token) < 20:
+        raise HTTPException(422, "Paste a Cloudflare API token with Zone → DNS → Edit permission")
+    return _queue({"action": "letsencrypt", "domains": body.domains, "email": body.email, "challenge": body.challenge,
+                   "cf_token": body.cf_token, "staging": body.staging}, request, f"letsencrypt {','.join(body.domains)}")
+
+
+class PfxIn(In):
+    pfx_b64: Annotated[str, StringConstraints(max_length=200_000)]
+    password: Annotated[str, StringConstraints(max_length=512)] = ""
+
+
+@r.post("/tls/pfx")
+def tls_pfx(body: PfxIn, request: Request, p: Principal = Admin):
+    """Unpack + check a .pfx/.p12 here (wrong password, missing key, expired, key/cert mismatch are caught now), then
+    hand PEMs to the agent. The password is never stored."""
+    import base64 as _b
+    from cryptography.hazmat.primitives import serialization as ser
+    from cryptography.hazmat.primitives.serialization import pkcs12
+    try:
+        raw = _b.b64decode(body.pfx_b64, validate=True)
+        key, cert, extra = pkcs12.load_key_and_certificates(raw, body.password.encode() or None)
+    except Exception:
+        raise HTTPException(422, "Couldn't open that file. Check it's a .pfx/.p12 and the password is right.") from None
+    if not key or not cert:
+        raise HTTPException(422, "The file needs both the certificate and its private key")
+    pub = lambda k: k.public_bytes(ser.Encoding.DER, ser.PublicFormat.SubjectPublicKeyInfo)
+    if pub(key.public_key()) != pub(cert.public_key()):
+        raise HTTPException(422, "The private key in the file doesn't match its certificate")
+    from datetime import datetime as _d, timezone as _tz
+    if cert.not_valid_after_utc <= _d.now(_tz.utc):
+        raise HTTPException(422, "That certificate has expired")
+    chain = cert.public_bytes(ser.Encoding.PEM) + b"".join(c.public_bytes(ser.Encoding.PEM) for c in (extra or []))
+    key_pem = key.private_bytes(ser.Encoding.PEM, ser.PrivateFormat.PKCS8, ser.NoEncryption())
+    try:
+        san = [str(n.value) for n in cert.extensions.get_extension_for_class(__import__("cryptography").x509.SubjectAlternativeName).value]
+    except Exception:
+        san = []
+    out = _queue({"action": "custom", "fullchain_pem": chain.decode(), "key_pem": key_pem.decode()}, request,
+                 f"imported certificate {cert.subject.rfc4514_string()}")
+    out.update(names=san, not_after=cert.not_valid_after_utc.isoformat(), subject=cert.subject.rfc4514_string())
+    return out
+
+
+@r.post("/tls/selfsigned")
+def tls_selfsigned(request: Request, p: Principal = Admin):
+    return _queue({"action": "selfsigned"}, request, "back to self-signed")
+
+
 # ---------- admin dashboard / guided setup ----------
 @r.get("/overview")
 def admin_overview(p: Principal = Admin):

@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.5.0 - 2026-10-17
+### Added
+- **Admin → HTTPS certificate** (left menu):
+  - **Let's Encrypt** via certbot: HTTP-01 (webroot served by nginx on port 80) or DNS-01 through Cloudflare
+    (API token); staging test option; ECDSA key; automatic renewal via `certbot.timer` with a deploy hook that
+    installs the renewed certificate and reloads nginx; one-click "use as Public URL".
+  - **Import .pfx/.p12** with password: validated in the app (password, key present, key matches certificate,
+    not expired), chain kept, password never stored.
+  - **Go back to self-signed**. Current certificate panel (mode, names, issuer, expiry, last result) that refreshes
+    while a job runs.
+- Root-side helper `app/tlsagent.py` triggered by a systemd path unit: the unprivileged app only queues JSON jobs.
+  Jobs must be owned by the app user, are size-limited, deleted before processing; certificates are swapped
+  atomically into `/etc/billtrack/tls/active/` with `nginx -t` and automatic rollback.
+- `setup.sh`: installs `certbot` + Cloudflare plugin, ACME webroot location in nginx, the helper units and the
+  renewal hook; nginx now serves `tls/active/`; re-runs keep a Let's Encrypt or imported certificate.
+- Tests: PFX import end to end (wrong password, queue, one-job-at-a-time, permissions, key removal), nginx-rejection
+  rollback, Let's Encrypt flow with a stand-in certbot (arguments, install, renewal hook).
+
 ## 3.4.0 - 2026-10-17
 ### Added
 - **Stay signed in.** Two minutes before the session limit a bar at the top counts down ("Your session ends in

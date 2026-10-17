@@ -4,7 +4,7 @@ export const title = "Admin";
 let tab = "overview", auditQ = "";
 // Each admin section is its own item in the left menu (see main.js). Hash for a section: #admin-<key>.
 export const SECTIONS = [["overview", "Overview"], ["users", "Users"], ["codes", "Invite codes"], ["settings", "System settings"],
-  ["audit", "Audit log"], ["tokens", "API tokens"], ["system", "Backup & system"]];
+  ["tls", "HTTPS certificate"], ["audit", "Audit log"], ["tokens", "API tokens"], ["system", "Backup & system"]];
 const nav = (t) => { const h = `admin-${t}`; if (location.hash.slice(1) === h) { tab = t; refresh(); } else location.hash = h; };
 
 export function view(t, label) {
@@ -12,7 +12,7 @@ export function view(t, label) {
     title: label,
     render: async (root) => {
       tab = t;
-      await ({ overview, users, codes, settings, audit, tokens, system })[t](root);
+      await ({ overview, users, codes, settings, tls, audit, tokens, system })[t](root);
       if (tourStep !== null) showTourStep();
     },
   };
@@ -307,6 +307,81 @@ async function settings(root) {
     s.smtp_pass_set ? el("button", { type: "button", class: "danger", onclick: () => api("PUT", "/api/admin/settings", { smtp_pass: "" }).then(refresh) }, "Clear saved SMTP password") : null,
     s.ntfy_token_set ? el("button", { type: "button", class: "danger", onclick: () => api("PUT", "/api/admin/settings", { ntfy_token: "" }).then(refresh) }, "Clear saved ntfy token") : null) : null,
     s.plaid_secret_set ? el("button", { type: "button", class: "danger", onclick: () => api("PUT", "/api/admin/settings", { plaid_secret: "" }).then(refresh) }, "Clear saved Plaid secret") : null);
+}
+
+// ---------- HTTPS certificate ----------
+let tlsPoll = null;
+async function tls(root) {
+  clearTimeout(tlsPoll);
+  const st = await api("GET", "/api/admin/tls");
+  const busy = st.pending || st.state === "working";
+  if (busy) tlsPoll = setTimeout(() => { if (location.hash === "#admin-tls") refresh(); }, 3000);
+  const c = st.cert || {};
+  const days = c.not_after ? Math.floor((new Date(c.not_after) - Date.now()) / 86400000) : null;
+  const MODE = { self: "BillTrack's own certificate (self-signed: devices must trust the BillTrack CA)",
+    letsencrypt: "Let's Encrypt (trusted everywhere, renews automatically)", custom: "Your own certificate (imported)" };
+  const current = el("section", { class: "card" }, el("h2", {}, "Current certificate"),
+    el("p", {}, el("strong", {}, MODE[st.mode] || st.mode)),
+    c.names ? el("table", { class: "tbl" }, [["Names", c.names.join(", ")], ["Issued by", c.issuer],
+      ["Expires", c.not_after ? `${fmtTs(c.not_after)} (${days} days)` : "—"]].map(([k, v]) => el("tr", {}, el("th", {}, k), el("td", { class: k === "Expires" && days < 21 ? "out" : "" }, v)))) : null,
+    busy ? el("p", { class: "banner warn" }, "⏳ Working on it… this page updates by itself. Let's Encrypt can take up to a minute.")
+      : st.message ? el("p", { class: st.state === "error" ? "err" : st.state === "ok" ? "ok" : "muted" }, el("span", { style: "white-space:pre-wrap" }, st.message)) : null,
+    st.mode !== "self" && !busy ? el("button", { type: "button", onclick: async () => {
+      if (await confirmBox("Go back to the self-signed certificate?", "Devices will need to trust the BillTrack CA again.", "Switch back", false))
+        api("POST", "/api/admin/tls/selfsigned").then(refresh).catch((e) => toast(e.message, true));
+    } }, "Go back to self-signed") : null);
+
+  // Let's Encrypt
+  const doms = el("input", { placeholder: "bills.example.com", autocomplete: "off", autocapitalize: "none" });
+  const email = el("input", { type: "email", value: S.me.email || "", placeholder: "you@example.com" });
+  const chHttp = el("input", { type: "radio", name: "ch", value: "http", checked: true });
+  const chCf = el("input", { type: "radio", name: "ch", value: "cloudflare" });
+  const tok = el("input", { type: "password", autocomplete: "off", placeholder: "Cloudflare API token" });
+  const tokRow = el("label", { hidden: true }, "Cloudflare API token (Zone → DNS → Edit for this domain)", tok);
+  [chHttp, chCf].forEach((r) => r.addEventListener("change", () => { tokRow.hidden = !chCf.checked; }));
+  const staging = el("input", { type: "checkbox", checked: true });
+  const leErr = el("p", { class: "err", role: "alert" });
+  const le = el("section", { class: "card" }, el("h2", {}, "Let's Encrypt (free, trusted, auto-renewing)"),
+    el("label", {}, "Domain name(s), comma separated", doms, el("span", { class: "hint" }, "Must be a real name that points at this server, e.g. bills.yourdomain.com. Not an IP address.")),
+    el("label", {}, "Email for expiry notices", email),
+    el("fieldset", {}, el("legend", {}, "How Let's Encrypt checks you own the name"),
+      el("label", { class: "check" }, chHttp, "HTTP: port 80 on this server is reachable from the internet at that name"),
+      el("label", { class: "check" }, chCf, "DNS through Cloudflare: works on a private network (10.x / 192.168.x); needs an API token"), tokRow),
+    el("label", { class: "check" }, staging, "Test run first (Let's Encrypt staging: not trusted, but no rate limits). Untick for the real certificate."),
+    leErr,
+    el("button", { type: "button", class: "primary", disabled: busy, onclick: async () => {
+      leErr.textContent = "";
+      const domains = doms.value.split(/[,\s]+/).map((d) => d.trim()).filter(Boolean);
+      try {
+        await api("POST", "/api/admin/tls/letsencrypt", { domains, email: email.value.trim(), challenge: chCf.checked ? "cloudflare" : "http",
+          cf_token: tok.value.trim(), staging: staging.checked });
+        toast("Requested. This takes up to a minute."); refresh();
+      } catch (e) { leErr.textContent = e.message; }
+    } }, "Get certificate"),
+    st.mode === "letsencrypt" && c.names?.length ? el("button", { type: "button", onclick: () =>
+      api("PUT", "/api/admin/settings", { base_url: `https://${c.names[0]}` }).then(() => toast(`Public URL set to https://${c.names[0]}`)).catch((e) => toast(e.message, true))
+    }, `Use https://${c.names[0]} as the public URL`) : null);
+
+  // PFX import
+  const file = el("input", { type: "file", accept: ".pfx,.p12,application/x-pkcs12" });
+  const pw = el("input", { type: "password", autocomplete: "off" });
+  const pfxErr = el("p", { class: "err", role: "alert" });
+  const pfx = el("section", { class: "card" }, el("h2", {}, "Use your own certificate (.pfx / .p12)"),
+    el("p", { class: "muted" }, "From your company CA or a certificate you bought. It must include the private key; the chain is used if present."),
+    el("label", {}, "Certificate file", file), el("label", {}, "File password", pw), pfxErr,
+    el("button", { type: "button", class: "primary", disabled: busy, onclick: async () => {
+      pfxErr.textContent = "";
+      const f = file.files[0];
+      if (!f) { pfxErr.textContent = "Choose a .pfx or .p12 file"; return; }
+      if (f.size > 140000) { pfxErr.textContent = "That file is too big for a certificate"; return; }
+      const b64 = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.onerror = no; r.readAsDataURL(f); });
+      try {
+        const r = await api("POST", "/api/admin/tls/pfx", { pfx_b64: b64, password: pw.value });
+        pw.value = ""; file.value = "";
+        toast(`Installing certificate for ${(r.names || []).join(", ") || r.subject}`); refresh();
+      } catch (e) { pfxErr.textContent = e.message; }
+    } }, "Import and install"));
+  fill(root, current, le, pfx, el("p", { class: "hint" }, "Changes are applied by a small root service on the server, which tests the nginx configuration and keeps the previous certificate if anything is wrong."));
 }
 
 // ---------- audit ----------

@@ -132,7 +132,7 @@ echo
 echo "==> Packages"
 apt-get update -qq
 apt-get install -y -qq python3 python3-venv rsync curl >/dev/null
-if [[ $PROXY == 1 ]]; then apt-get install -y -qq nginx openssl >/dev/null; fi
+if [[ $PROXY == 1 ]]; then apt-get install -y -qq nginx openssl certbot python3-certbot-dns-cloudflare >/dev/null; fi
 
 echo "==> Service user"
 id "$SVC_USER" &>/dev/null || useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin "$SVC_USER"
@@ -302,6 +302,7 @@ Environment=BT_RUNTIME_KEY=$RUNTIME_KEY
 Environment=BT_ENV_FILE=$ENV_FILE
 Environment=BT_INSTALL_CONF=$INSTALL_CONF
 Environment=BT_TLS_DIR=$TLS_DIR
+Environment=BT_TLS_SPOOL=$DATA_DIR/tls
 ExecStart=$APP_DIR/.venv/bin/uvicorn app.main:app --host $BIND --port $PORT --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-server-header --timeout-graceful-shutdown 10
 Restart=on-failure
 TimeoutStopSec=20
@@ -428,6 +429,18 @@ if [[ $PROXY == 1 ]]; then
   install -d -m 755 /var/www/billtrack
   install -m 644 "$TLS_DIR/ca.crt" /var/www/billtrack/billtrack-ca.crt
 
+  # Active certificate = what nginx serves. Self-signed unless an admin installed Let's Encrypt or their own
+  # (Admin > HTTPS certificate); re-running setup never replaces those.
+  TLS_MODE=$(cat "$TLS_DIR/mode" 2>/dev/null || echo self)
+  if [[ "$TLS_MODE" == "self" || ! -f "$TLS_DIR/active/fullchain.pem" ]]; then
+    install -d -m 700 "$TLS_DIR/active"
+    install -m 644 "$TLS_DIR/fullchain.crt" "$TLS_DIR/active/fullchain.pem"
+    install -m 600 "$TLS_DIR/server.key" "$TLS_DIR/active/privkey.pem"
+    echo self > "$TLS_DIR/mode"; TLS_MODE=self
+  fi
+  echo "    Serving the $TLS_MODE certificate"
+  install -d -m 755 /var/www/billtrack-acme/.well-known/acme-challenge
+
   echo "==> nginx (443 -> 127.0.0.1:$PORT)"
   # HTTP/2 syntax changed in nginx 1.25.1: "listen ... http2" (older) vs a separate "http2 on;" (newer)
   NGV=$(nginx -v 2>&1 | sed -n 's#.*nginx/\([0-9.]*\).*#\1#p')
@@ -455,6 +468,8 @@ server {
         default_type application/x-x509-ca-cert;
         add_header Content-Disposition 'attachment; filename="billtrack-ca.crt"';
     }
+    # Let's Encrypt HTTP check (only used when an admin requests a Let's Encrypt certificate)
+    location ^~ /.well-known/acme-challenge/ { root /var/www/billtrack-acme; default_type text/plain; }
     location / { return 301 https://\$host\$request_uri; }
 }
 
@@ -465,8 +480,8 @@ server {
     server_name _;
     server_tokens off;
 
-    ssl_certificate     $TLS_DIR/fullchain.crt;
-    ssl_certificate_key $TLS_DIR/server.key;
+    ssl_certificate     $TLS_DIR/active/fullchain.pem;
+    ssl_certificate_key $TLS_DIR/active/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305;
     ssl_prefer_server_ciphers off;
@@ -499,6 +514,38 @@ NGINX
     rm /etc/nginx/sites-enabled/default
     echo "    Disabled nginx's default site (it also listens on port 80)"
   fi
+  # Certificate helper: the app (unprivileged) queues jobs; this root service applies them and reloads nginx
+  install -d -m 750 -o "$SVC_USER" -g "$SVC_USER" "$DATA_DIR/tls"
+  install -d -m 700 -o "$SVC_USER" -g "$SVC_USER" "$DATA_DIR/tls/requests"
+  TLS_ENV="BT_TLS_DIR=$TLS_DIR BT_TLS_SPOOL=$DATA_DIR/tls PYTHONPATH=$APP_DIR/src"
+  cat > /usr/local/sbin/billtrack-tls-hook <<HOOK
+#!/bin/sh
+# certbot renewal hook: install the renewed certificate for nginx
+exec env $TLS_ENV $APP_DIR/.venv/bin/python -m app.tlsagent deploy-hook
+HOOK
+  chmod 755 /usr/local/sbin/billtrack-tls-hook
+  cat > /etc/systemd/system/billtrack-tls.service <<UNIT
+[Unit]
+Description=BillTrack certificate helper (applies Admin > HTTPS certificate requests)
+[Service]
+Type=oneshot
+Environment=$TLS_ENV
+ExecStart=$APP_DIR/.venv/bin/python -m app.tlsagent process
+UNIT
+  cat > /etc/systemd/system/billtrack-tls.path <<UNIT
+[Unit]
+Description=Watch for BillTrack certificate requests
+[Path]
+PathExistsGlob=$DATA_DIR/tls/requests/*.json
+Unit=billtrack-tls.service
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable -q --now billtrack-tls.path
+  systemctl enable -q --now certbot.timer 2>/dev/null || true
+  env BT_TLS_DIR="$TLS_DIR" BT_TLS_SPOOL="$DATA_DIR/tls" PYTHONPATH="$APP_DIR/src" "$APP_DIR/.venv/bin/python" -m app.tlsagent status >/dev/null || true
+
   nginx -t -q
   systemctl enable -q nginx
   systemctl reload nginx 2>/dev/null || systemctl restart nginx
@@ -516,7 +563,8 @@ if not settings.get('base_url'):
     settings.update({'base_url': '$URL'}); print('    Public URL set to $URL (change in Admin > Settings)')"
 
   systemctl restart billtrack; sleep 2   # pick up Public URL
-  if curl -s --cacert "$TLS_DIR/ca.crt" --resolve "$HOST_S:443:127.0.0.1" "https://$HOST_S/healthz" | grep -q ok; then
+  CURL_TLS=(--cacert "$TLS_DIR/ca.crt"); [[ "$(cat "$TLS_DIR/mode" 2>/dev/null)" == "self" ]] || CURL_TLS=(-k)
+  if curl -s "${CURL_TLS[@]}" --resolve "$HOST_S:443:127.0.0.1" "https://$HOST_S/healthz" | grep -q ok; then
     echo "    HTTPS check: OK"
   else
     echo "    HTTPS check FAILED - see: sudo journalctl -u billtrack -n 50 ; sudo nginx -t"

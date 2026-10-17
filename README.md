@@ -4,7 +4,7 @@ Self-hosted bill, paycheck, savings and investment tracker built around the **we
 roles, two-factor sign-in, alerts by email and phone push, and encryption at every layer: the database on disk,
 secrets inside it, and every byte of browser traffic.
 
-![version](https://img.shields.io/badge/version-3.4.0-blue)
+![version](https://img.shields.io/badge/version-3.5.0-blue)
 
 ## Features
 
@@ -95,6 +95,26 @@ original user becomes admin.
   trust the CA, not the server certificate, renewals never need re-trusting.
 - Firewall: if `ufw` is active, 80/tcp and 443/tcp are opened.
 - Admin → System settings → Public URL is filled in with `https://<server-ip>` on first install.
+
+#### Let's Encrypt or your own certificate (Admin → HTTPS certificate)
+- **Let's Encrypt** (free, trusted by every device, renews automatically): enter the domain name(s) and an email,
+  then pick how Let's Encrypt checks you own the name:
+  - **HTTP**: port 80 on this server must be reachable from the internet at that name (port-forward 80).
+  - **DNS through Cloudflare**: works on a private network; paste a Cloudflare API token with *Zone → DNS → Edit*
+    for that domain (stored root-only in `/etc/billtrack/cloudflare.ini` so renewals work).
+  Leave **Test run first** ticked for a staging certificate, then untick it for the real one. certbot's timer
+  renews it and a hook installs the renewed certificate and reloads nginx. After it works, press
+  *Use https://… as the public URL*.
+- **Your own certificate**: upload a `.pfx`/`.p12` with its password. It's checked immediately (password, private
+  key present and matching, not expired); the password isn't stored.
+- **Go back to self-signed** at any time.
+
+How it's applied: the web app runs unprivileged and only queues a request in `/var/lib/billtrack/tls/requests`.
+A root helper (`billtrack-tls.path` → `billtrack-tls.service`, `python -m app.tlsagent`) picks it up, deletes the
+request file (it can contain a private key), installs the certificate in `/etc/billtrack/tls/active/`, runs
+`nginx -t`, reloads nginx, and restores the previous certificate if nginx rejects the new one. Re-running
+`setup.sh` keeps whichever certificate is active. The page shows the current certificate, its names, issuer and
+days left.
 
 #### Trusting the certificate (once per device)
 Until you do this the browser shows a warning. Open `http://<server-ip>/billtrack-ca.crt` on the device, check
@@ -312,7 +332,7 @@ pip install -r requirements.txt pytest httpx
 export BT_DB_KEY=$(python -c 'import secrets;print(secrets.token_hex(32))') BT_COOKIE_SECURE=false
 python -m app.manage adduser dev admin
 uvicorn app.main:app --reload --port 8080
-python -m pytest -q        # 48 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
+python -m pytest -q        # 51 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
 pip-audit -r requirements.txt
 ```
 
