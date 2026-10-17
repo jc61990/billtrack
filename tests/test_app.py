@@ -610,3 +610,25 @@ def test_user_time_zone(user):
         settings.update({"timezone": "America/Chicago"})
         p = user.get("/api/me").json()["prefs"]; p.update(tz_auto=True, timezone="")
         user.put("/api/me", json={"display_name": "", "email": "jc@example.com", "prefs": p}, headers=H)
+
+
+def test_session_hard_limit_and_idle(user):
+    assert settings.get("session_minutes") == 15 and settings.get("idle_minutes") == 15
+    me = user.get("/api/me").json()
+    from datetime import datetime as _dt
+    left = (_dt.fromisoformat(me["session_expires_at"]) - _dt.now(__import__("datetime").timezone.utc)).total_seconds()
+    assert 14 * 60 < left <= 15 * 60
+    # 16 minutes after sign-in: refused even though the stored expiry (from an older, longer setting) is later
+    with db.tx() as con:
+        con.execute("UPDATE sessions SET created_at=?, expires_at=?, last_seen=? WHERE user_id=(SELECT id FROM users WHERE username='jc')",
+                    ((security.now_utc() - timedelta(minutes=16)).isoformat(), (security.now_utc() + timedelta(days=20)).isoformat(),
+                     security.now_utc().isoformat()))
+    assert user.get("/api/me").status_code == 401
+    u2 = login("jc")
+    with db.tx() as con:   # idle for 16 minutes
+        con.execute("UPDATE sessions SET last_seen=? WHERE user_id=(SELECT id FROM users WHERE username='jc')",
+                    ((security.now_utc() - timedelta(minutes=16)).isoformat(),))
+    assert u2.get("/api/me").status_code == 401
+    assert login("jc").get("/api/me").status_code == 200
+    with pytest.raises(ValueError):
+        settings.validate("session_minutes", 1)

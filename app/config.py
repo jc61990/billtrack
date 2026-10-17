@@ -51,6 +51,6 @@ DEFAULTS = {
     "plaid_sync_hours": int(os.getenv("BT_PLAID_SYNC_HOURS", "6") or 6),
     "require_2fa": _bool("BT_REQUIRE_2FA", False),
     "registration_mode": os.getenv("BT_REGISTRATION", "approval"),   # approval | invite_only | closed
-    "session_days": _int("BT_SESSION_DAYS", 30),
-    "idle_days": _int("BT_IDLE_DAYS", 7),
+    "session_minutes": _int("BT_SESSION_MINUTES", 15),   # hard limit: sign in again after this
+    "idle_minutes": _int("BT_IDLE_MINUTES", 15),         # sooner if nothing happens for this long
 }

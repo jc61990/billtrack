@@ -27,7 +27,7 @@ class MfaIn(BaseModel):
 
 
 def _set_cookie(resp: Response, tok: str):
-    resp.set_cookie(COOKIE, tok, max_age=settings.get("session_days") * 86400, httponly=True,
+    resp.set_cookie(COOKIE, tok, max_age=settings.get("session_minutes") * 60, httponly=True,
                     secure=config.COOKIE_SECURE, samesite="strict", path="/")
 
 

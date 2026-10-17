@@ -153,15 +153,17 @@ def _from_session(tok: str) -> Principal:
     h = crypto.token_hash(tok)
     n = now_utc()
     with tx() as con:
-        r = con.execute("""SELECT s.expires_at, s.last_seen, u.* FROM sessions s JOIN users u ON u.id=s.user_id
-                           WHERE s.token_hash=?""", (h,)).fetchone()
-        idle = timedelta(days=settings.get("idle_days"))
+        r = con.execute("""SELECT s.expires_at, s.last_seen, s.created_at AS s_created, u.* FROM sessions s
+                           JOIN users u ON u.id=s.user_id WHERE s.token_hash=?""", (h,)).fetchone()
+        idle = timedelta(minutes=settings.get("idle_minutes"))
+        hard = timedelta(minutes=settings.get("session_minutes"))   # also caps sessions made under a longer limit
         if (not r or r["disabled"] or r["expires_at"] < iso(n)
+                or (r["s_created"] and datetime.fromisoformat(r["s_created"]) + hard < n)
                 or (r["last_seen"] and datetime.fromisoformat(r["last_seen"]) + idle < n)):
             if r:
                 con.execute("DELETE FROM sessions WHERE token_hash=?", (h,))
             raise HTTPException(401, "Sign in required")
-        if not r["last_seen"] or datetime.fromisoformat(r["last_seen"]) < n - timedelta(minutes=5):
+        if not r["last_seen"] or datetime.fromisoformat(r["last_seen"]) < n - timedelta(seconds=30):
             con.execute("UPDATE sessions SET last_seen=? WHERE token_hash=?", (iso(n), h))
     p = Principal(r["id"], r["username"], r["role"], effective_perms(r), "session", None, h)
     p.mfa_setup_required = bool(settings.get("require_2fa")) and not r["totp_enabled"]
@@ -206,7 +208,7 @@ def new_session(con, user_id: int, ip: str, ua: str) -> str:
     con.execute("DELETE FROM sessions WHERE expires_at < ?", (iso(n),))
     con.execute("INSERT INTO sessions(token_hash,user_id,expires_at,created_at,last_seen,ip,user_agent) "
                 "VALUES (?,?,?,?,?,?,?)", (crypto.token_hash(tok), user_id,
-                                           iso(n + timedelta(days=settings.get("session_days"))),
+                                           iso(n + timedelta(minutes=settings.get("session_minutes"))),
                                            iso(n), iso(n), ip[:64], ua[:200]))
     return tok
 

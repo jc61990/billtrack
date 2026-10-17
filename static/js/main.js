@@ -34,20 +34,35 @@ function nav() {
   const btn = (v) => el("button", { type: "button", "aria-current": S.view === v[0] ? "page" : null, onclick: () => go(v[0]) },
     v[2], v[0] === "alerts" ? el("span", { class: "badge", hidden: !S.me.unread }, S.me.unread) : null);
   $("#sidenav").replaceChildren(...vs.map(btn),
-    el("button", { type: "button", class: "signout", onclick: signOut }, "⎋ Sign out"));
+    el("button", { type: "button", class: "signout", onclick: () => signOut() }, "⎋ Sign out"));
   const bottom = vs.filter((v) => v[4]).slice(0, 4);
   const rest = vs.filter((v) => !bottom.includes(v));
   fill($("#tabs"), ...bottom.map(btn), rest.length ? el("button", { type: "button",
     "aria-current": rest.some((v) => v[0] === S.view) ? "page" : null, onclick: () => {
       showDialog("More", el("div", { class: "menu" }, rest.map((v) => el("button", { type: "button", onclick: () => { $("#dlg").close(); go(v[0]); } }, v[2])),
-        el("button", { type: "button", class: "danger", onclick: signOut }, "⎋ Sign out")));
+        el("button", { type: "button", class: "danger", onclick: () => signOut() }, "⎋ Sign out")));
     } }, "More") : null);
 }
 
-async function signOut() {
+async function signOut(message) {
   try { await api("POST", "/api/logout"); } catch { /* signed out either way */ }
+  try { if (typeof message === "string") sessionStorage.setItem("bt-msg", message); } catch { /* ignore */ }
   location.replace("/");
 }
+
+// Forced sign-out: hard session limit from the server, and real inactivity (the background refresh doesn't count).
+let lastActivity = Date.now(), warned = false;
+["pointerdown", "keydown", "wheel", "touchstart"].forEach((ev) => addEventListener(ev, () => { lastActivity = Date.now(); }, { passive: true }));
+setInterval(() => {
+  if (!S.me || !S.me.session_expires_at) return;
+  const left = new Date(S.me.session_expires_at).getTime() - Date.now();
+  const idleMs = (S.me.idle_minutes || 15) * 60000 - (Date.now() - lastActivity);
+  if (idleMs <= 0) return signOut("You were signed out after being inactive.");
+  if (left <= 0) return signOut("Your session ended. Please sign in again.");
+  const soon = Math.min(left, idleMs);
+  if (soon < 60000 && !warned) { warned = true; toast(left <= idleMs ? "Your session ends in under a minute. Save what you're doing." : "Signing out in a minute because of inactivity."); }
+  if (soon >= 60000) warned = false;
+}, 5000);
 
 function go(view) {
   if (!allowed().some((v) => v[0] === view)) view = allowed()[0][0];

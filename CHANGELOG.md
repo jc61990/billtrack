@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.1.0 - 2026-10-17
+### Changed
+- **Sessions last 15 minutes**, then everyone signs in again. Settings are now in minutes (Admin → Settings →
+  Security: "Sign-in lasts" 5-43200 min, default 15; "Sign out sooner after idle", default 15). Replaces the
+  day-based `session_days`/`idle_days` (`BT_SESSION_MINUTES`, `BT_IDLE_MINUTES` for first-run defaults).
+- Server enforces the limit from the session's creation time on every request, so sessions made under the old
+  30-day setting end at the new limit too. Idle tracking resolution tightened to 30 s.
+- Browser enforces it too: signs out at the hard limit or after real inactivity (clicks, keys, scroll, touch;
+  the background auto-refresh doesn't count), warns a minute before, and shows why on the sign-in screen.
+### Added
+- `/api/me` returns `session_expires_at` and `idle_minutes`. Test for the hard limit (including an old long-lived
+  session) and idle expiry.
+
 ## 3.0.1 - 2026-10-17
 ### Changed
 - Removed the **Add** button from the top bar. Adding is still on Home (+ Bill, + Overtime, + Spending,

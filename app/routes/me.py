@@ -30,8 +30,17 @@ def me(p: Principal = Self):
         u = _user(con, p.user_id)
         unread = con.execute("SELECT count(*) FROM notifications WHERE user_id=? AND read_at IS NULL",
                              (p.user_id,)).fetchone()[0]
+        sess = con.execute("SELECT expires_at, created_at FROM sessions WHERE token_hash=?", (p.session_hash,)).fetchone() \
+            if p.session_hash else None
+        ends = None
+        if sess:
+            from datetime import datetime as _dt
+            cap = _dt.fromisoformat(sess["created_at"]) + timedelta(minutes=settings.get("session_minutes")) \
+                if sess["created_at"] else None
+            ends = min(sess["expires_at"], iso(cap)) if cap else sess["expires_at"]
     return {"id": u["id"], "username": u["username"], "display_name": u["display_name"], "email": u["email"],
             "has_feed": bool(u["ics_token_hash"]),
+            "session_expires_at": ends, "idle_minutes": settings.get("idle_minutes"),
             "role": u["role"], "perms": sorted(p.perms), "totp_enabled": bool(u["totp_enabled"]),
             "mfa_setup_required": p.mfa_setup_required, "prefs": notify.prefs(u), "unread": unread,
             "version": __version__,

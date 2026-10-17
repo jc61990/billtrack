@@ -8,7 +8,7 @@ from .db import tx
 
 SECRET = {"smtp_pass", "ntfy_token", "plaid_secret"}
 TYPES = {"plaid_sync_hours": int, "week_start": int, "digest_weekday": int, "digest_hour": int, "smtp_port": int,
-         "require_2fa": bool, "session_days": int, "idle_days": int}
+         "require_2fa": bool, "session_minutes": int, "idle_minutes": int}
 _cache: dict | None = None
 _lock = threading.Lock()
 
@@ -54,7 +54,7 @@ def validate(key: str, value):
         if len(value) > 300 or any(not ch.isprintable() for ch in value):
             raise ValueError(f"{key}: invalid text")
     rng = {"week_start": (0, 6), "digest_weekday": (0, 6), "digest_hour": (0, 23), "smtp_port": (1, 65535),
-           "session_days": (1, 90), "idle_days": (1, 90), "plaid_sync_hours": (1, 24)}
+           "session_minutes": (5, 43200), "idle_minutes": (5, 43200), "plaid_sync_hours": (1, 24)}
     if key in rng and not rng[key][0] <= value <= rng[key][1]:
         raise ValueError(f"{key} must be between {rng[key][0]} and {rng[key][1]}")
     if key == "timezone":

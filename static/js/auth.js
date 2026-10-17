@@ -23,7 +23,9 @@ export async function showAuth(cb) {
   const hash = new URLSearchParams(location.hash.slice(1));
   if (hash.get("reset")) return resetScreen(hash.get("reset"));
   if (hash.has("register")) return registerScreen(hash.get("register") || "");
-  loginScreen();
+  let msg;
+  try { msg = sessionStorage.getItem("bt-msg"); sessionStorage.removeItem("bt-msg"); } catch { /* ignore */ }
+  loginScreen(msg || undefined);
 }
 
 function clearHash() { history.replaceState(null, "", location.pathname); }
