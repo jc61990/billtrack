@@ -1,4 +1,4 @@
-import { $, addDays, api, barChart, can, el, fmtDay, kpis, money, onContext, S , fill } from "../core.js";
+import { addDays, api, barChart, can, el, fmtDay, kpis, money, onContext, S , fill } from "../core.js";
 import { expenseForm, extraForm, billForm, reminderForm } from "../forms.js";
 import { collect, isIn, isRem, itemRow, reminderItems } from "../items.js";
 

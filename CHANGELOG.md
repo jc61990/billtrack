@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.5.2 - 2026-10-17
+### Fixed
+- **Admin → Users showed "ROLE_HELP is not defined".** The definition was lost when the admin tabs moved to the
+  left menu in 3.3.0, and that release's checks never opened Users.
+### Added
+- Frontend lint (`eslint.config.mjs`, ESLint `no-undef` and friends) over all browser code, run in CI on every
+  push, so a missing or misspelled name fails the build instead of a page. Removed the unused imports it found.
+- Release check now opens every page in the left menu as both a user and an admin and fails on any script error,
+  error message or blank page (13 user pages, 10 admin pages: all clean).
+
 ## 3.5.1 - 2026-10-17
 ### Fixed
 - **Clicking quickly broke the page.** Two causes, both reproduced:

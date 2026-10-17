@@ -1,10 +1,12 @@
-import { api, closeDialog, confirmBox, el, fmtTs, money, onContext, openForm, refresh, S, showDialog, showMenu, toast, fill } from "../core.js";
+import { api, closeDialog, confirmBox, el, fmtTs, onContext, openForm, refresh, S, showDialog, showMenu, toast, fill } from "../core.js";
 
 export const title = "Admin";
 let tab = "overview", auditQ = "";
 // Each admin section is its own item in the left menu (see main.js). Hash for a section: #admin-<key>.
 export const SECTIONS = [["overview", "Overview"], ["users", "Users"], ["codes", "Invite codes"], ["settings", "System settings"],
   ["tls", "HTTPS certificate"], ["audit", "Audit log"], ["tokens", "API tokens"], ["system", "Backup & system"]];
+const ROLE_HELP = { admin: "runs the system (settings, users, backups); no finance pages",
+  user: "their own private finances; no system settings" };
 const nav = (t) => { const h = `admin-${t}`; if (location.hash.slice(1) === h) { tab = t; refresh(); } else location.hash = h; };
 
 export function view(t, label) {
@@ -63,7 +65,7 @@ const TOUR = [
   { tab: "users", sel: "[data-tour=pending]", title: "6. Approvals",
     text: "Sign-ups without a code land here. Approve or reject them; approved people get an email saying they can sign in. That's it: people can now open the site and press Create an account." },
 ];
-let tourStep = null, tourRoot = null;
+let tourStep = null;
 function startTour() { goStep(0); }
 function goStep(n) { tourStep = n; nav(TOUR[n].tab); }
 function endTour(done) {

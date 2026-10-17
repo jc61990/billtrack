@@ -1,4 +1,4 @@
-import { addDays, api, can, el, fmtDay, iso, money, moneyShort, onContext, parseIso, S, DOW, fill, safeColor } from "../core.js";
+import { addDays, api, can, el, fmtDay, iso, money, onContext, parseIso, S, DOW, fill, safeColor } from "../core.js";
 import { collect, isIn, isRem, itemChip, itemRow, reminderItems } from "../items.js";
 import { dayMenu } from "./week.js";
 

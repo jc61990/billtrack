@@ -6,7 +6,7 @@ const sec = (title, ...kids) => el("section", { class: "card" }, el("h2", {}, ti
 const check = (name, label, val) => el("label", { class: "check" }, el("input", { type: "checkbox", name, checked: !!val }), label);
 
 export async function render(root) {
-  const me = S.me, sessionOnly = me.via === "session";
+  const me = S.me;
   const [sessions, tokens] = await Promise.all([api("GET", "/api/me/sessions"), api("GET", "/api/me/tokens")]);
   fill(root, 
     me.mfa_setup_required ? el("div", { class: "banner warn", role: "alert" },
