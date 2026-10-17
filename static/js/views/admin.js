@@ -157,9 +157,13 @@ function userEdit(u) {
   const roleSel = el("select", { name: "role" }, [["user", "User (their own finances)"], ["admin", "Admin (runs the system, no finances)"]]
     .map(([v, l]) => el("option", { value: v, selected: u.role === v }, l)));
   const name = el("input", { value: u.display_name, maxlength: 60 }), email = el("input", { type: "email", value: u.email, maxlength: 254 });
+  const uname = el("input", { value: u.username, required: true, minlength: 3, maxlength: 32, pattern: "[A-Za-z0-9_.\\-]+",
+    autocomplete: "off", autocapitalize: "none" });
   const disabled = el("input", { type: "checkbox", checked: !!u.disabled });
   const err = el("p", { class: "err", role: "alert" });
   const form = showDialog(`Account: ${u.username}`, el("div", { class: "stack" },
+    el("label", {}, "Username (what they sign in with)", uname,
+      el("span", { class: "hint" }, "Letters, numbers, . _ -. They stay signed in; if email is set up they're told about the change.")),
     el("label", {}, "Display name", name), el("label", {}, "Email", email), el("label", {}, "Account type", roleSel),
     el("p", { class: "hint" }, "Changing the type doesn't move or delete their data; an admin simply can't open finance pages."),
     el("label", { class: "check" }, disabled, "Disabled (blocks sign-in and API tokens)"), err),
@@ -167,7 +171,10 @@ function userEdit(u) {
   form.onsubmit = async (e) => {
     e.preventDefault();
     try {
-      await api("PUT", `/api/admin/users/${u.id}`, { display_name: name.value, email: email.value.trim(), role: roleSel.value, disabled: disabled.checked, perms_deny: [] });
+      const newName = uname.value.trim();
+      if (newName !== u.username && !(await confirmBox("Change username?", `${u.username} will sign in as "${newName}" from now on.`, "Change it", false))) return;
+      await api("PUT", `/api/admin/users/${u.id}`, { username: newName, display_name: name.value, email: email.value.trim(),
+        role: roleSel.value, disabled: disabled.checked, perms_deny: [] });
       closeDialog(); toast("Saved"); refresh();
     } catch (x) { err.textContent = x.message; }
   };

@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.2.0 - 2026-10-17
+### Added
+- Admins can **change usernames** (Admin → Users → click an account → Username, with a confirmation).
+  Same rules as sign-up (3-32 letters, numbers, . _ -), unique regardless of case. Sessions, data, 2FA and API tokens
+  are tied to the account, not the name, so the person stays signed in. They're emailed about the change (if email
+  is configured), and the audit log records old and new names. `PUT /api/admin/users/{id}` accepts optional
+  `username`.
+
 ## 3.1.0 - 2026-10-17
 ### Changed
 - **Sessions last 15 minutes**, then everyone signs in again. Settings are now in minutes (Admin → Settings →

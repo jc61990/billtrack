@@ -290,6 +290,7 @@ def create_user(body: UserCreate, request: Request, p: Principal = Admin):
 
 
 class UserUpdate(In):
+    username: Username | None = None          # omitted = unchanged
     display_name: Annotated[str, StringConstraints(strip_whitespace=True, max_length=60)] = ""
     email: Email = ""
     role: Role
@@ -312,14 +313,26 @@ def update_user(uid: int, body: UserUpdate, request: Request, p: Principal = Adm
             raise HTTPException(409, "Keep at least one active admin")
         if uid == p.user_id and (body.role != "admin" or body.disabled):
             raise HTTPException(409, "You can't demote or disable yourself")
+        renamed = body.username is not None and body.username != u["username"]
+        if renamed:
+            if con.execute("SELECT 1 FROM users WHERE username=? COLLATE NOCASE AND id<>?", (body.username, uid)).fetchone():
+                raise HTTPException(409, "That username is taken")
+            con.execute("UPDATE users SET username=? WHERE id=?", (body.username, uid))
+            audit(con, request, "username changed", body.username, f"was {u['username']}")
         con.execute("UPDATE users SET display_name=?, email=?, role=?, disabled=?, perms_deny=? WHERE id=?",
                     (body.display_name, body.email, body.role, int(body.disabled),
                      json.dumps(sorted(set(body.perms_deny))), uid))
         if body.disabled:
             con.execute("DELETE FROM sessions WHERE user_id=?", (uid,))
             con.execute("UPDATE api_tokens SET revoked=1 WHERE user_id=?", (uid,))
-        audit(con, request, "user updated", u["username"],
+        audit(con, request, "user updated", body.username or u["username"],
               f"role={body.role} disabled={body.disabled} deny={','.join(body.perms_deny)}")
+    # tell the person (it's their sign-in name); sessions stay valid because they're tied to the account, not the name
+    to = body.email or u["email"]
+    if renamed and to and notify.email_ready():
+        notify._enqueue("email", to, "Your BillTrack username changed",
+                        f"An administrator changed your sign-in username from '{u['username']}' to '{body.username}'.\n"
+                        "Your password is unchanged. If you didn't expect this, contact your administrator.")
     return {"ok": True}
 
 

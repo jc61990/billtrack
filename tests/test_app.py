@@ -632,3 +632,25 @@ def test_session_hard_limit_and_idle(user):
     assert login("jc").get("/api/me").status_code == 200
     with pytest.raises(ValueError):
         settings.validate("session_minutes", 1)
+
+
+def test_admin_renames_user(admin, user, monkeypatch):
+    queued = []
+    monkeypatch.setattr(notify, "email_ready", lambda: True)
+    monkeypatch.setattr(notify, "_enqueue", lambda kind, *a: queued.append(a) or "queued")
+    mkuser("taken")
+    users_ = {u["username"]: u for u in admin.get("/api/admin/users").json()}
+    uid = users_["jc"]["id"]
+    body = {"role": "user", "email": "jc@example.com"}
+    assert admin.put(f"/api/admin/users/{uid}", json={**body, "username": "TAKEN"}, headers=H).status_code == 409   # case-insensitive
+    assert admin.put(f"/api/admin/users/{uid}", json={**body, "username": "no spaces!"}, headers=H).status_code == 422
+    assert admin.put(f"/api/admin/users/{uid}", json={**body, "username": "jc.renamed"}, headers=H).status_code == 200
+    assert user.get("/api/me").json()["username"] == "jc.renamed"            # still signed in, same data
+    assert queued and "jc.renamed" in queued[-1][2]                          # told by email
+    c = TestClient(app)
+    assert c.post("/api/login", json={"username": "jc", "password": PW}, headers=H).status_code == 401
+    assert c.post("/api/login", json={"username": "jc.renamed", "password": PW}, headers=H).status_code == 200
+    assert any(x["action"] == "username changed" for x in admin.get("/api/admin/audit?q=username").json())
+    assert user.put(f"/api/admin/users/{uid}", json={**body, "username": "selfrename"}, headers=H).status_code == 403
+    admin.put(f"/api/admin/users/{uid}", json={**body, "username": "jc"}, headers=H)
+    assert admin.put(f"/api/admin/users/{uid}", json=body, headers=H).status_code == 200  # omitted = unchanged

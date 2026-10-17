@@ -4,7 +4,7 @@ Self-hosted bill, paycheck, savings and investment tracker built around the **we
 roles, two-factor sign-in, alerts by email and phone push, and encryption at every layer: the database on disk,
 secrets inside it, and every byte of browser traffic.
 
-![version](https://img.shields.io/badge/version-3.1.0-blue)
+![version](https://img.shields.io/badge/version-3.2.0-blue)
 
 ## Features
 
@@ -148,6 +148,10 @@ change or link into another user's data through every route.
   optional email straight from the portal (with a link that fills the code in). On the sign-up page the person
   ticks **I have an invite code** and skips approval. The list shows each code's state and who used it (email,
   username, time). Codes are stored hashed for lookup and sealed for display.
+
+**Renaming:** admins can change anyone's username in Admin → Users → click the account. Names are unique
+(case-insensitive), the person stays signed in and keeps their data, gets an email about it if email is set up,
+and the change is in the audit log.
 
 **First run** asks only for an admin account. On first sign-in the admin gets a **guided setup** that walks
 through the public address, email, security, sign-up mode, invite codes and approvals, highlighting each spot with
@@ -306,7 +310,7 @@ pip install -r requirements.txt pytest httpx
 export BT_DB_KEY=$(python -c 'import secrets;print(secrets.token_hex(32))') BT_COOKIE_SECURE=false
 python -m app.manage adduser dev admin
 uvicorn app.main:app --reload --port 8080
-python -m pytest -q        # 46 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
+python -m pytest -q        # 47 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
 pip-audit -r requirements.txt
 ```
 
