@@ -24,22 +24,24 @@ const VIEWS = [
   ["bills", bills, "Bills", "finance:read"],
   ["income", income, "Income", "finance:read"], ["trackers", trackers, "Trackers", "trackers:read"],
   ["investments", investments, "Investments", "investments:read"], ["banks", banks, "Bank links", "finance:write"],
-  ["admin", admin, "Admin", "admin", true],
-  ["alerts", alerts, "Alerts", "self", true], ["settings", settings, "Settings", "self", true],
+  ...admin.SECTIONS.map(([k, label], i) => [`admin-${k}`, admin.view(k, label), label, "admin", i < 3]),
+  ["alerts", alerts, "Alerts", "self", true],
+  ["settings", settings, () => (can("admin") ? "My account" : "Settings"), "self", true],
 ];
 const allowed = () => VIEWS.filter((v) => can(v[3]) && (!S.me.mfa_setup_required || v[0] === "settings"));
 
 function nav() {
   const vs = allowed();
+  const label = (v) => (typeof v[2] === "function" ? v[2]() : v[2]);
   const btn = (v) => el("button", { type: "button", "aria-current": S.view === v[0] ? "page" : null, onclick: () => go(v[0]) },
-    v[2], v[0] === "alerts" ? el("span", { class: "badge", hidden: !S.me.unread }, S.me.unread) : null);
+    label(v), v[0] === "alerts" ? el("span", { class: "badge", hidden: !S.me.unread }, S.me.unread) : null);
   $("#sidenav").replaceChildren(...vs.map(btn),
     el("button", { type: "button", class: "signout", onclick: () => signOut() }, "⎋ Sign out"));
   const bottom = vs.filter((v) => v[4]).slice(0, 4);
   const rest = vs.filter((v) => !bottom.includes(v));
   fill($("#tabs"), ...bottom.map(btn), rest.length ? el("button", { type: "button",
     "aria-current": rest.some((v) => v[0] === S.view) ? "page" : null, onclick: () => {
-      showDialog("More", el("div", { class: "menu" }, rest.map((v) => el("button", { type: "button", onclick: () => { $("#dlg").close(); go(v[0]); } }, v[2])),
+      showDialog("More", el("div", { class: "menu" }, rest.map((v) => el("button", { type: "button", onclick: () => { $("#dlg").close(); go(v[0]); } }, label(v))),
         el("button", { type: "button", class: "danger", onclick: () => signOut() }, "⎋ Sign out")));
     } }, "More") : null);
 }
@@ -83,7 +85,7 @@ setRefresh(async () => {
     if (can("finance:read")) [S.accounts, S.sources] = await Promise.all([api("GET", "/api/accounts"), api("GET", "/api/income-sources")]);
     if (!allowed().some((v) => v[0] === S.view)) S.view = allowed()[0][0];
     const v = VIEWS.find((x) => x[0] === S.view);
-    $("#viewTitle").textContent = v[1].title;
+    $("#viewTitle").textContent = typeof v[2] === "function" ? v[2]() : v[1].title;
     $("#who").textContent = me.display_name || me.username;
     $("#bellCount").textContent = me.unread > 99 ? "99+" : me.unread; $("#bellCount").hidden = !me.unread;
     nav();
@@ -108,14 +110,19 @@ async function boot() {
   $("#auth").hidden = true; $("#app").hidden = false;
   const h = location.hash.slice(1);
   const isAdmin = S.me.perms.includes("admin");
-  S.view = VIEWS.some((v) => v[0] === h) ? h : (S.me.mfa_setup_required ? "settings" : isAdmin ? "admin" : "home");
+  const legacy = h === "admin" ? "admin-overview" : h;   // old #admin bookmarks
+  S.view = VIEWS.some((v) => v[0] === legacy) ? legacy : (S.me.mfa_setup_required ? "settings" : isAdmin ? "admin-overview" : "home");
   go(S.view);
   if (isAdmin && !S.me.mfa_setup_required) admin.maybeAutoTour();
 }
 
 setUnauthorizedHandler(() => { S.me = null; showAuth(boot); });
 $("#bell").addEventListener("click", () => go("alerts"));
-addEventListener("hashchange", () => { const h = location.hash.slice(1); if (S.me && VIEWS.some((v) => v[0] === h) && h !== S.view) go(h); });
+addEventListener("hashchange", () => {
+  let h = location.hash.slice(1);
+  if (h === "admin") h = "admin-overview";              // old bookmarks
+  if (S.me && VIEWS.some((v) => v[0] === h) && h !== S.view) go(h);
+});
 // Server is the single source of truth: re-pull on focus and every minute (skipped while a dialog is open or dragging).
 const idle = () => !document.hidden && !$("#dlg").open && !document.body.classList.contains("is-dragging") && !document.querySelector(".ctx");
 document.addEventListener("visibilitychange", () => { if (S.me && idle()) refresh(); });

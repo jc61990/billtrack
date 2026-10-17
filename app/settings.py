@@ -1,4 +1,4 @@
-"""System settings stored in the encrypted DB (edited in Admin > Settings). Secrets additionally AES-GCM sealed."""
+"""System settings stored in the encrypted DB (edited in Admin > System settings). Secrets additionally AES-GCM sealed."""
 import json
 import threading
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -120,7 +120,7 @@ def system_tz() -> ZoneInfo:
 
 def tz() -> ZoneInfo:
     """The time zone for whoever this work is for: the signed-in user's (set per request / per alert), else the
-    system default from Admin > Settings."""
+    system default from Admin > System settings."""
     u = _user_tz.get()
     return ZoneInfo(u) if u else system_tz()
 

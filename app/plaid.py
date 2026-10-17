@@ -34,7 +34,7 @@ def configured() -> bool:
 def _post(path: str, body: dict) -> dict:
     """The single network call. Swappable in tests."""
     if not configured():
-        raise PlaidError("NOT_CONFIGURED", "Add your Plaid client ID and secret in Admin > Settings first")
+        raise PlaidError("NOT_CONFIGURED", "Add your Plaid client ID and secret in Admin > System settings first")
     url = HOSTS[settings.get("plaid_env")] + path
     data = json.dumps({"client_id": settings.get("plaid_client_id"), "secret": settings.get("plaid_secret"), **body}).encode()
     req = urllib.request.Request(url, data=data, method="POST", headers={"Content-Type": "application/json",

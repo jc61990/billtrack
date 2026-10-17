@@ -57,7 +57,7 @@ function alertsPrefs(me) {
   const topic = el("input", { name: "ntfy_topic", value: p.ntfy_topic, maxlength: 64, pattern: "[A-Za-z0-9_\\-]*",
     placeholder: "long-random-topic-name", autocomplete: "off" });
   const f = el("form", { class: "stack" },
-    el("p", { class: "muted" }, me.email_ready ? "" : "Email isn't set up on the server yet (an admin can do that in Admin > Settings)."),
+    el("p", { class: "muted" }, me.email_ready ? "" : "Email isn't set up on the server yet (an admin can do that in Admin → System settings)."),
     check("email_alerts", "Email me alerts", p.email_alerts),
     check("push_alerts", "Push alerts to my phone (ntfy app)", p.push_alerts),
     el("label", {}, `ntfy topic on ${me.push_server}`, topic,

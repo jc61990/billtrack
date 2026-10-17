@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.3.0 - 2026-10-17
+### Changed
+- Admin sections moved out of the tab strip into the **left menu**: Overview, Users, Invite codes, System settings,
+  Audit log, API tokens, Backup & system (then Alerts, **My account**, Sign out). Each has its own page title and
+  address (`#admin-users`, `#admin-system`, …); old `#admin` links open Overview.
+- For admins the personal page is labelled **My account** so it isn't confused with System settings.
+- Phones: Overview, Users, Invite codes and Alerts in the bottom bar; the rest under More.
+- The guided setup moves between those pages from the left menu.
+
 ## 3.2.0 - 2026-10-17
 ### Added
 - Admins can **change usernames** (Admin → Users → click an account → Username, with a confirmation).

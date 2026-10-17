@@ -4,7 +4,7 @@ Self-hosted bill, paycheck, savings and investment tracker built around the **we
 roles, two-factor sign-in, alerts by email and phone push, and encryption at every layer: the database on disk,
 secrets inside it, and every byte of browser traffic.
 
-![version](https://img.shields.io/badge/version-3.2.0-blue)
+![version](https://img.shields.io/badge/version-3.3.0-blue)
 
 ## Features
 
@@ -39,7 +39,7 @@ secrets inside it, and every byte of browser traffic.
 | Secrets in the DB | TOTP seeds, SMTP password, ntfy token additionally sealed with AES-256-GCM (HKDF-derived key). Never returned by the API. |
 | Passwords | Argon2id, 12+ characters, same error for every login failure (no username discovery). |
 | Sign-in | Optional/required TOTP 2FA with one-time recovery codes and replay protection; lockout after 8 failures; per-IP throttling. |
-| Sessions | 256-bit random tokens stored as SHA-256; `HttpOnly; Secure; SameSite=Strict`. **Hard limit 15 minutes** from sign-in (Admin → Settings → Security, 5 minutes to 30 days), plus an idle limit; enforced by the server on every request (including sessions created under a longer limit) and by the browser, which signs you out on time with a one-minute warning, even if the page is just left open. Background refreshes don't count as activity. List and revoke sessions per device. |
+| Sessions | 256-bit random tokens stored as SHA-256; `HttpOnly; Secure; SameSite=Strict`. **Hard limit 15 minutes** from sign-in (Admin → System settings → Security, 5 minutes to 30 days), plus an idle limit; enforced by the server on every request (including sessions created under a longer limit) and by the browser, which signs you out on time with a one-minute warning, even if the page is just left open. Background refreshes don't count as activity. List and revoke sessions per device. |
 | Requests | CSRF header + Origin check, strict CSP (no inline script/style), strict input models (unknown fields rejected), parameterized SQL, body size caps, API rate limit. |
 | Authorization | Role + permission checks on every endpoint server-side. API tokens are capped by their owner's permissions and can never do admin or account actions. |
 | Accountability | Audit log of sign-ins, failures, lockouts, permission changes, settings, tokens, backups, deletes. |
@@ -68,7 +68,7 @@ There are no command-line options or install variables. The first run asks:
 5. Admin username and password
 
 It then prints the address (e.g. `https://192.168.1.50`) and how to trust the certificate on your devices.
-Email, push and everything else are set in **Admin → Settings**.
+Email, push and everything else are set in **Admin → System settings**.
 
 **Updating:** `git pull && sudo ./setup.sh`. It shows your saved answers and asks *Keep these settings?*. Press
 Enter to keep them, or `n` to change the proxy choice or certificate names, issue a fresh certificate, or start a
@@ -92,7 +92,7 @@ original user becomes admin.
   ask for a fresh one during an update). Because devices
   trust the CA, not the server certificate, renewals never need re-trusting.
 - Firewall: if `ufw` is active, 80/tcp and 443/tcp are opened.
-- Admin → Settings → Public URL is filled in with `https://<server-ip>` on first install.
+- Admin → System settings → Public URL is filled in with `https://<server-ip>` on first install.
 
 #### Trusting the certificate (once per device)
 Until you do this the browser shows a warning. Open `http://<server-ip>/billtrack-ca.crt` on the device, check
@@ -132,14 +132,14 @@ Chrome, Edge). Run **one** app process (default): channels and pending 2FA sign-
 
 | Account type | Can | Can't |
 |---|---|---|
-| **Admin** | Admin portal: settings (email, sign-ups, security, Plaid keys), users, approvals, invite codes, audit log, backups and maintenance | Open any finance page or see anyone's money |
+| **Admin** | Left menu: Overview, Users, Invite codes, System settings, Audit log, API tokens, Backup & system, Alerts, My account. Admin portal: settings (email, sign-ups, security, Plaid keys), users, approvals, invite codes, audit log, backups and maintenance | Open any finance page or see anyone's money |
 | **User** | Their **own private** bills, income, accounts, net worth, trackers, investments, bank links, reminders, calendar link | Change any server setting, or see another user's data |
 
 Every financial record has an owner. If a request ever reaches finance code without a user in scope (an admin,
 a script, a bug), the server refuses it rather than return anything. A test has a second user try to read,
 change or link into another user's data through every route.
 
-**Sign-up** (Admin → Settings → Sign-ups):
+**Sign-up** (Admin → System settings → Sign-ups):
 - *Anyone can sign up; an admin approves them* (default). The sign-in page shows **Create an account**. New
   sign-ups wait in Admin → Users → *Waiting for approval*. Admins get an in-app alert (and email); approved people
   get an email.
@@ -192,7 +192,7 @@ Each person's dates follow **their own time zone**, picked up automatically from
 Profile → *Use this device's time zone*, on by default; untick it to choose one by hand). The server works out
 "today", overdue bills, this week, paydays, reminder times and when that person's alerts and weekly summary go out
 in that zone. Timestamps (last sync, sign-ins, audit log) are always shown in your browser's local time.
-Admin → Settings → *Default time zone* only applies to people who haven't got one yet and to shared system tasks
+Admin → System settings → *Default time zone* only applies to people who haven't got one yet and to shared system tasks
 (daily snapshots, account alerts).
 
 ## Encryption keys and disaster recovery
@@ -239,7 +239,7 @@ database is kept as `billtrack.db.before-import-*`), then start the service.
 1. Sign up at **dashboard.plaid.com** and choose **Personal use**. The free Trial plan allows up to 10 bank
    connections with real data.
 2. In the Plaid dashboard: Developers → Keys. Copy the **client ID** and the **Production** secret.
-3. BillTrack: **Admin → Settings → Bank sync (Plaid)**, paste both, environment *Production*, save.
+3. BillTrack: **Admin → System settings → Bank sync (Plaid)**, paste both, environment *Production*, save.
 4. Signed in as a **user**: **Bank links → Connect a bank.** Pick the date to import spending from (default: 1st of this month),
    then sign in to your bank in Plaid's window (Capital One, Citi and Schwab use their own sign-in pages).
 5. For each bank account choose how BillTrack uses it: an existing account, **＋ New BillTrack account**,
@@ -270,7 +270,7 @@ mapping, sync and unlink is in the audit log. Plaid's Link script loads **only**
 own content-security policy allowing `cdn.plaid.com` (plus inline styles, which Plaid's full-screen frame needs); the rest of the app still allows no third-party code.
 
 ## Alerts
-- **Email:** Admin → Settings → Email. TLS is mandatory and certificates are verified. Gmail: `smtp.gmail.com`,
+- **Email:** Admin → System settings → Email. TLS is mandatory and certificates are verified. Gmail: `smtp.gmail.com`,
   587, STARTTLS, App Password. Each user sets their address in Settings.
 - **Phone push:** install the ntfy app; each user picks a long random topic in Settings → Alerts. Self-hosted ntfy
   with an access token is recommended (topics on ntfy.sh are public to anyone who guesses the name).
@@ -300,7 +300,7 @@ Set `BT_ICS_TOKEN` (`billtrack-manage gen-ics-token`) and subscribe to `https://
 Google, Outlook or iPhone Calendar.
 
 ## Configuration
-Infrastructure settings are environment variables (`.env.example`). Everything else lives in Admin → Settings,
+Infrastructure settings are environment variables (`.env.example`). Everything else lives in Admin → System settings,
 stored encrypted; env values only seed the first run.
 
 ## Development

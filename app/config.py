@@ -28,7 +28,7 @@ RATE_LIMIT_PER_MIN = _int("BT_RATE_LIMIT_PER_MIN", 300)
 # Browser API traffic must use the encrypted channel (/api/hs + /api/x). Bearer-token scripts are exempt.
 REQUIRE_CHANNEL = _bool("BT_REQUIRE_CHANNEL", True)
 
-# First-run defaults for DB-stored settings (editable later in Admin > Settings)
+# First-run defaults for DB-stored settings (editable later in Admin > System settings)
 DEFAULTS = {
     "base_url": os.getenv("BT_BASE_URL", ""),
     "timezone": os.getenv("BT_TZ", "America/Chicago"),

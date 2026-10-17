@@ -2,19 +2,22 @@ import { api, closeDialog, confirmBox, el, fmtTs, money, onContext, openForm, re
 
 export const title = "Admin";
 let tab = "overview", auditQ = "";
-const TABS = [["overview", "Overview"], ["users", "Users"], ["codes", "Invite codes"], ["settings", "Settings"],
+// Each admin section is its own item in the left menu (see main.js). Hash for a section: #admin-<key>.
+export const SECTIONS = [["overview", "Overview"], ["users", "Users"], ["codes", "Invite codes"], ["settings", "System settings"],
   ["audit", "Audit log"], ["tokens", "API tokens"], ["system", "Backup & system"]];
-const ROLE_HELP = { admin: "runs the system (settings, users, backups); no finance pages", user: "their own private finances; no system settings" };
+const nav = (t) => { const h = `admin-${t}`; if (location.hash.slice(1) === h) { tab = t; refresh(); } else location.hash = h; };
 
-export async function render(root) {
-  try { const t = sessionStorage.getItem("bt-admin-tab"); if (t) { tab = t; sessionStorage.removeItem("bt-admin-tab"); } } catch { /* ignore */ }
-  const body = el("div");
-  fill(root, el("div", { class: "seg", role: "tablist" }, TABS.map(([k, l]) =>
-    el("button", { type: "button", role: "tab", "aria-selected": String(tab === k), dataset: { tab: k }, onclick: () => { tab = k; render(root); } }, l))), body);
-  await ({ overview, users, codes, settings, audit, tokens, system })[tab](body);
-  if (tourStep !== null) showTourStep();
+export function view(t, label) {
+  return {
+    title: label,
+    render: async (root) => {
+      tab = t;
+      await ({ overview, users, codes, settings, audit, tokens, system })[t](root);
+      if (tourStep !== null) showTourStep();
+    },
+  };
 }
-export const openTab = (t) => { tab = t; };
+export async function render(root) { return view(tab, title).render(root); }
 
 // ---------- overview + guided setup ----------
 async function overview(root) {
@@ -30,7 +33,7 @@ async function overview(root) {
       el("div", {}, el("small", {}, "Open invite codes"), el("strong", {}, o.codes_open)),
       el("div", {}, el("small", {}, "Admins"), el("strong", {}, o.admins))),
     o.pending ? el("div", { class: "banner warn" }, `${o.pending} sign-up${o.pending > 1 ? "s" : ""} waiting. `,
-      el("button", { type: "button", onclick: () => { tab = "users"; refresh(); } }, "Review")) : null,
+      el("button", { type: "button", onclick: () => nav("users") }, "Review")) : null,
     el("section", { class: "card" },
       el("div", { class: "spread" }, el("h2", {}, "Setup checklist"),
         el("button", { type: "button", class: "primary", onclick: () => startTour() }, o.setup_done ? "Run the setup guide again" : "Start the setup guide")),
@@ -41,7 +44,7 @@ async function overview(root) {
         item(c.registration !== "closed", `Sign-ups: ${({ approval: "open, admin approves", invite_only: "invite code required", closed: "closed" })[c.registration]}`,
           "How new people get accounts.", () => goStep(4)),
         item(c.passphrase, "Database passphrase", c.passphrase ? "Data needs your passphrase + this server's key file." : "Run sudo ./setup.sh on the server.", null),
-        item(c.backups > 0, "Backups", `${c.backups} on the server. Download a disaster-recovery copy and keep it off the server.`, () => { tab = "system"; refresh(); }))));
+        item(c.backups > 0, "Backups", `${c.backups} on the server. Download a disaster-recovery copy and keep it off the server.`, () => nav("system")))));
 }
 
 const TOUR = [
@@ -61,8 +64,8 @@ const TOUR = [
     text: "Sign-ups without a code land here. Approve or reject them; approved people get an email saying they can sign in. That's it: people can now open the site and press Create an account." },
 ];
 let tourStep = null, tourRoot = null;
-function startTour() { tourStep = 0; tab = TOUR[0].tab; refresh(); }
-function goStep(n) { tourStep = n; tab = TOUR[n].tab; refresh(); }
+function startTour() { goStep(0); }
+function goStep(n) { tourStep = n; nav(TOUR[n].tab); }
 function endTour(done) {
   tourStep = null; document.querySelector(".tour")?.remove();
   document.querySelectorAll(".tour-target").forEach((x) => x.classList.remove("tour-target"));
