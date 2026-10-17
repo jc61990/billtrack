@@ -66,6 +66,8 @@ def validate(key: str, value):
         raise ValueError("plaid_env must be production or sandbox")
     if key == "plaid_client_id" and value and not value.isalnum():
         raise ValueError("Plaid client ID should be letters and numbers only")
+    if key == "registration_mode" and value not in ("approval", "invite_only", "closed"):
+        raise ValueError("registration_mode must be approval, invite_only or closed")
     if key == "smtp_auth" and value not in ("password", "none"):
         raise ValueError("smtp_auth must be password or none")
     if key == "smtp_helo" and value and not __import__("re").fullmatch(

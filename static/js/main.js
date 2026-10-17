@@ -14,17 +14,19 @@ import * as investments from "./views/investments.js";
 import * as alerts from "./views/alerts.js";
 import * as settings from "./views/settings.js";
 import * as admin from "./views/admin.js";
+import * as banks from "./views/banks.js";
 
 // [key, module, nav label, required permission, on mobile bottom bar]
 const VIEWS = [
-  ["home", home, "Home", "self", true],
+  ["home", home, "Home", "finance:read", true],
   ["week", week, "Week", "finance:read", true], ["cal", cal, "Calendar", "finance:read", true],
   ["accounts", accounts, "Accounts", "finance:read", true], ["networth", networth, "Net worth", "finance:read"],
   ["overview", overview, "Overview", "finance:read"],
   ["bills", bills, "Bills", "finance:read"],
   ["income", income, "Income", "finance:read"], ["trackers", trackers, "Trackers", "trackers:read"],
-  ["investments", investments, "Investments", "investments:read"], ["alerts", alerts, "Alerts", "self"],
-  ["settings", settings, "Settings", "self"], ["admin", admin, "Admin", "admin"],
+  ["investments", investments, "Investments", "investments:read"], ["banks", banks, "Bank links", "finance:write"],
+  ["admin", admin, "Admin", "admin", true],
+  ["alerts", alerts, "Alerts", "self", true], ["settings", settings, "Settings", "self", true],
 ];
 const allowed = () => VIEWS.filter((v) => can(v[3]) && (!S.me.mfa_setup_required || v[0] === "settings"));
 
@@ -94,8 +96,10 @@ async function boot() {
   S.day ||= S.me.today; S.month ||= S.me.today.slice(0, 7);
   $("#auth").hidden = true; $("#app").hidden = false;
   const h = location.hash.slice(1);
-  S.view = VIEWS.some((v) => v[0] === h) ? h : (S.me.mfa_setup_required ? "settings" : "home");
+  const isAdmin = S.me.perms.includes("admin");
+  S.view = VIEWS.some((v) => v[0] === h) ? h : (S.me.mfa_setup_required ? "settings" : isAdmin ? "admin" : "home");
   go(S.view);
+  if (isAdmin && !S.me.mfa_setup_required) admin.maybeAutoTour();
 }
 
 setUnauthorizedHandler(() => { S.me = null; showAuth(boot); });
@@ -109,5 +113,5 @@ setInterval(() => { if (S.me && idle()) refresh(); }, 60000);
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 
 const hash = new URLSearchParams(location.hash.slice(1));
-if (hash.get("reset") || hash.get("invite")) showAuth(boot);
+if (hash.get("reset") || hash.has("register")) showAuth(boot);
 else api("GET", "/api/me").then(() => boot()).catch(() => showAuth(boot));

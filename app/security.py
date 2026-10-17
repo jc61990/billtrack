@@ -20,13 +20,13 @@ COOKIE = "bt_session"
 
 PERMS = ["finance:read", "finance:write", "trackers:read", "trackers:write",
          "investments:read", "investments:write", "reminders", "self", "admin"]
+FINANCE = {"finance:read", "finance:write", "trackers:read", "trackers:write", "investments:read",
+           "investments:write", "reminders"}
 ROLE_PERMS = {
-    "admin": set(PERMS),
-    "member": set(PERMS) - {"admin"},
-    "viewer": {"finance:read", "trackers:read", "investments:read", "reminders", "self"},
+    "admin": {"admin", "self"},          # runs the system; never sees anyone's money
+    "user": FINANCE | {"self"},          # their own private finances; no server settings
 }
-# Permissions an admin may remove from an individual member/viewer
-DENYABLE = ["finance:write", "trackers:read", "trackers:write", "investments:read", "investments:write", "reminders"]
+DENYABLE: list = []
 SCOPES = {
     "read": {"finance:read", "trackers:read", "investments:read"},
     "write": {"finance:read", "finance:write", "trackers:read", "trackers:write",
@@ -100,12 +100,13 @@ def clear_tz_cache():
     _tz_cache.clear()
 
 
-def tz_for_request(headers) -> str:
-    """User's time zone for this request ('' = system default). Cheap: cached per credential for 60 s."""
+def context_for_request(headers) -> tuple[str, int | None, int | None]:
+    """(time zone, owner id if a finance user, week start) for this request's credential. Cached 60 s.
+    Only used to set scope; authorization is still done by require() on every endpoint."""
     auth = headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
-        h, q = crypto.token_hash(auth[7:].strip()), ("SELECT u.prefs FROM api_tokens t JOIN users u ON u.id=t.user_id "
-                                                     "WHERE t.token_hash=? AND t.revoked=0")
+        h, q = crypto.token_hash(auth[7:].strip()), ("SELECT u.id, u.role, u.prefs, u.status, u.disabled FROM api_tokens t "
+                                                     "JOIN users u ON u.id=t.user_id WHERE t.token_hash=? AND t.revoked=0")
     else:
         tok = None
         for part in headers.get("cookie", "").split(";"):
@@ -113,21 +114,27 @@ def tz_for_request(headers) -> str:
             if k == COOKIE:
                 tok = v
         if not tok or len(tok) > 200:
-            return ""
-        h, q = crypto.token_hash(tok), "SELECT u.prefs FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=?"
+            return "", None, None
+        h, q = crypto.token_hash(tok), ("SELECT u.id, u.role, u.prefs, u.status, u.disabled FROM sessions s "
+                                        "JOIN users u ON u.id=s.user_id WHERE s.token_hash=?")
     hit = _tz_cache.get(h)
     if hit and hit[1] > time.monotonic():
         return hit[0]
+    ctx = ("", None, None)
     try:
         with tx() as con:
             r = con.execute(q, (h,)).fetchone()
-        name = settings.user_tz_name(json.loads(r["prefs"] or "{}")) if r else ""
+        if r:
+            pr = json.loads(r["prefs"] or "{}")
+            ws = pr.get("week_start")
+            owner = r["id"] if r["role"] == "user" and r["status"] == "active" and not r["disabled"] else None
+            ctx = (settings.user_tz_name(pr), owner, ws if isinstance(ws, int) and 0 <= ws <= 6 else None)
     except Exception:
-        name = ""
+        pass
     if len(_tz_cache) > 5000:
         _tz_cache.clear()
-    _tz_cache[h] = (name, time.monotonic() + 60)
-    return name
+    _tz_cache[h] = (ctx, time.monotonic() + 60)
+    return ctx
 
 
 def _from_bearer(tok: str) -> Principal:

@@ -50,6 +50,7 @@ DEFAULTS = {
     "plaid_secret": os.getenv("BT_PLAID_SECRET", ""),
     "plaid_sync_hours": int(os.getenv("BT_PLAID_SYNC_HOURS", "6") or 6),
     "require_2fa": _bool("BT_REQUIRE_2FA", False),
+    "registration_mode": os.getenv("BT_REGISTRATION", "approval"),   # approval | invite_only | closed
     "session_days": _int("BT_SESSION_DAYS", 30),
     "idle_days": _int("BT_IDLE_DAYS", 7),
 }

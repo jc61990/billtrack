@@ -3,6 +3,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 
 from . import settings
+from .scope import owner, week_start_override
 from .db import rows
 from .recurrence import occurrences, week_bounds
 
@@ -14,7 +15,8 @@ def today() -> date:
 
 
 def week_start_of(d: date) -> date:
-    return week_bounds(d, settings.get("week_start"))[0]
+    ws = week_start_override()
+    return week_bounds(d, settings.get("week_start") if ws is None else ws)[0]
 
 
 def _d(s):
@@ -23,7 +25,7 @@ def _d(s):
 
 def _overrides(con, kind):
     return {(o["item_id"], o["orig_date"]): o for o in rows(
-        con, "SELECT * FROM occurrence_overrides WHERE kind=?", (kind,))}
+        con, "SELECT * FROM occurrence_overrides WHERE kind=? AND owner_id=?", (kind, owner()))}
 
 
 def _expand(item, ov, kind, lo, hi):
@@ -37,10 +39,11 @@ def _expand(item, ov, kind, lo, hi):
 
 def bill_occurrences(con, lo: date, hi: date, include_skipped=False):
     bills = rows(con, """SELECT b.*, a.name AS account, a.color AS account_color
-                         FROM bills b LEFT JOIN accounts a ON a.id=b.account_id WHERE b.active=1""")
+                         FROM bills b LEFT JOIN accounts a ON a.id=b.account_id WHERE b.active=1 AND b.owner_id=?""", (owner(),))
     ov = _overrides(con, "bill")
     paid = {(p["bill_id"], p["due_date"]): p for p in rows(
-        con, "SELECT * FROM payments WHERE due_date BETWEEN ? AND ?", ((lo - PAD).isoformat(), (hi + PAD).isoformat()))}
+        con, "SELECT * FROM payments WHERE due_date BETWEEN ? AND ? AND owner_id=?",
+        ((lo - PAD).isoformat(), (hi + PAD).isoformat(), owner()))}
     t, out = today(), []
     for b in bills:
         for d, orig, o in _expand(b, ov, "bill", lo, hi):
@@ -74,11 +77,11 @@ def bill_occurrences(con, lo: date, hi: date, include_skipped=False):
 
 def pay_occurrences(con, lo: date, hi: date, include_skipped=False):
     srcs = rows(con, """SELECT s.*, a.name AS account FROM income_sources s
-                        LEFT JOIN accounts a ON a.id=s.account_id WHERE s.active=1""")
+                        LEFT JOIN accounts a ON a.id=s.account_id WHERE s.active=1 AND s.owner_id=?""", (owner(),))
     ov = _overrides(con, "pay")
     rec = {(r["source_id"], r["pay_date"]): r for r in rows(
-        con, "SELECT * FROM income_received WHERE pay_date BETWEEN ? AND ?",
-        ((lo - PAD).isoformat(), (hi + PAD).isoformat()))}
+        con, "SELECT * FROM income_received WHERE pay_date BETWEEN ? AND ? AND owner_id=?",
+        ((lo - PAD).isoformat(), (hi + PAD).isoformat(), owner()))}
     out = []
     for s in srcs:
         for d, orig, o in _expand(s, ov, "pay", lo, hi):
@@ -100,13 +103,13 @@ def pay_occurrences(con, lo: date, hi: date, include_skipped=False):
 def extras(con, lo: date, hi: date):
     return rows(con, """SELECT e.*, a.name AS account, s.name AS source FROM income_extra e
                         LEFT JOIN accounts a ON a.id=e.account_id LEFT JOIN income_sources s ON s.id=e.source_id
-                        WHERE e.date BETWEEN ? AND ? ORDER BY e.date""", (lo.isoformat(), hi.isoformat()))
+                        WHERE e.date BETWEEN ? AND ? AND e.owner_id=? ORDER BY e.date""", (lo.isoformat(), hi.isoformat(), owner()))
 
 
 def expenses(con, lo: date, hi: date):
     return rows(con, """SELECT x.*, a.name AS account FROM expenses x
                         LEFT JOIN accounts a ON a.id=x.account_id
-                        WHERE x.date BETWEEN ? AND ? ORDER BY x.date""", (lo.isoformat(), hi.isoformat()))
+                        WHERE x.date BETWEEN ? AND ? AND x.owner_id=? ORDER BY x.date""", (lo.isoformat(), hi.isoformat(), owner()))
 
 
 def summarize(con, lo: date, hi: date, detail=True, include_skipped=False):
@@ -157,9 +160,11 @@ def trend(con, weeks_back: int, weeks_ahead: int):
 
 # ---------- trackers ----------
 def trackers(con, include_archived=False):
-    ts = rows(con, "SELECT * FROM trackers" + ("" if include_archived else " WHERE archived=0") + " ORDER BY name")
+    ts = rows(con, "SELECT * FROM trackers WHERE owner_id=?" + ("" if include_archived else " AND archived=0") + " ORDER BY name",
+              (owner(),))
     sums = {r["tracker_id"]: r for r in rows(
-        con, "SELECT tracker_id, sum(amount_cents) total, count(*) n, max(date) last FROM tracker_entries GROUP BY tracker_id")}
+        con, "SELECT tracker_id, sum(amount_cents) total, count(*) n, max(date) last FROM tracker_entries "
+             "WHERE owner_id=? GROUP BY tracker_id", (owner(),))}
     t = today()
     for tr in ts:
         s = sums.get(tr["id"], {"total": 0, "n": 0, "last": None})
@@ -183,8 +188,8 @@ def trackers(con, include_archived=False):
 
 # ---------- investments ----------
 def investments(con):
-    accts = rows(con, "SELECT * FROM inv_accounts ORDER BY name")
-    hold = rows(con, "SELECT * FROM holdings ORDER BY symbol")
+    accts = rows(con, "SELECT * FROM inv_accounts WHERE owner_id=? ORDER BY name", (owner(),))
+    hold = rows(con, "SELECT * FROM holdings WHERE owner_id=? ORDER BY symbol", (owner(),))
     by = defaultdict(list)
     for h in hold:
         h["value_cents"] = round(h["quantity"] * h["price_cents"])
@@ -208,17 +213,17 @@ def investments(con):
 
 def investment_history(con, days: int):
     since = (today() - timedelta(days=days)).isoformat()
-    r = rows(con, "SELECT date, sum(value_cents) value_cents FROM inv_snapshots WHERE date >= ? GROUP BY date ORDER BY date",
-             (since,))
+    r = rows(con, "SELECT date, sum(value_cents) value_cents FROM inv_snapshots WHERE date >= ? AND owner_id=? "
+                  "GROUP BY date ORDER BY date", (since, owner()))
     return r
 
 
 def snapshot_investments(con):
     d = today().isoformat()
     for a in investments(con)["accounts"]:
-        con.execute("INSERT INTO inv_snapshots(inv_account_id,date,value_cents) VALUES (?,?,?) "
+        con.execute("INSERT INTO inv_snapshots(inv_account_id,date,value_cents,owner_id) VALUES (?,?,?,?) "
                     "ON CONFLICT(inv_account_id,date) DO UPDATE SET value_cents=excluded.value_cents",
-                    (a["id"], d, a["value_cents"]))
+                    (a["id"], d, a["value_cents"], owner()))
 
 
 # ---------- overview ----------
@@ -255,7 +260,8 @@ def overview(con, lo: date, hi: date, group: str, perms: set):
             series.append({"start": a.isoformat(), "label": cur.isoformat(),
                            **{k: w[k] for k in ("in_cents", "out_cents", "net_cents")}})
             cur += timedelta(days=7)
-    accts = rows(con, "SELECT id, name, kind, balance_cents, balance_updated FROM accounts ORDER BY name")
+    accts = rows(con, "SELECT id, name, kind, balance_cents, balance_updated FROM accounts WHERE owner_id=? ORDER BY name",
+                 (owner(),))
     nwv = networth(con, perms)
     assets, debts = nwv["assets_cents"], nwv["liabilities_cents"]
     res = {k: s[k] for k in ("start", "end", "in_cents", "out_cents", "net_cents", "pay_cents", "extra_cents",
@@ -299,7 +305,7 @@ def accounts_view(con):
     t = today()
     ws = week_start_of(t)
     we = ws + timedelta(days=6)
-    accts = rows(con, "SELECT * FROM accounts ORDER BY name COLLATE NOCASE")
+    accts = rows(con, "SELECT * FROM accounts WHERE owner_id=? ORDER BY name COLLATE NOCASE", (owner(),))
     # money still expected to move through each account between today and the end of this pay week
     pending: dict = defaultdict(int)
     for b in bill_occurrences(con, t, we):
@@ -309,8 +315,8 @@ def accounts_view(con):
         if not p["received"] and p["account_id"]:
             pending[p["account_id"]] += p["amount_cents"]
     hist: dict = defaultdict(list)
-    for h in rows(con, "SELECT account_id, date, balance_cents FROM account_history WHERE date >= ? ORDER BY date",
-                  ((t - timedelta(days=90)).isoformat(),)):
+    for h in rows(con, "SELECT account_id, date, balance_cents FROM account_history WHERE date >= ? AND owner_id=? ORDER BY date",
+                  ((t - timedelta(days=90)).isoformat(), owner())):
         hist[h["account_id"]].append({"date": h["date"], "balance_cents": h["balance_cents"]})
     banks, cards, other = [], [], []
     for a in accts:
@@ -345,15 +351,15 @@ def accounts_view(con):
 
 
 def record_balance(con, account_id: int, balance_cents: int):
-    con.execute("INSERT INTO account_history(account_id,date,balance_cents) VALUES (?,?,?) "
+    con.execute("INSERT INTO account_history(account_id,date,balance_cents,owner_id) VALUES (?,?,?,?) "
                 "ON CONFLICT(account_id,date) DO UPDATE SET balance_cents=excluded.balance_cents",
-                (account_id, today().isoformat(), balance_cents))
+                (account_id, today().isoformat(), balance_cents, owner()))
 
 
 def snapshot_accounts(con):
-    for a in rows(con, "SELECT id, balance_cents FROM accounts"):
-        con.execute("INSERT OR IGNORE INTO account_history(account_id,date,balance_cents) VALUES (?,?,?)",
-                    (a["id"], today().isoformat(), a["balance_cents"]))
+    for a in rows(con, "SELECT id, balance_cents FROM accounts WHERE owner_id=?", (owner(),)):
+        con.execute("INSERT OR IGNORE INTO account_history(account_id,date,balance_cents,owner_id) VALUES (?,?,?,?)",
+                    (a["id"], today().isoformat(), a["balance_cents"], owner()))
 
 
 # ---------- net worth ----------
@@ -365,8 +371,8 @@ NW_PARTS = ("cash_cents", "investments_cents", "other_assets_cents", "cards_cent
 
 
 def _nw_parts(con) -> dict:
-    accts = rows(con, "SELECT kind, balance_cents FROM accounts")
-    items = rows(con, "SELECT side, value_cents FROM networth_items WHERE active=1")
+    accts = rows(con, "SELECT kind, balance_cents FROM accounts WHERE owner_id=?", (owner(),))
+    items = rows(con, "SELECT side, value_cents FROM networth_items WHERE active=1 AND owner_id=?", (owner(),))
     return {
         "cash_cents": sum(a["balance_cents"] for a in accts if a["kind"] in BANK or a["kind"] == "other"),
         "investments_cents": investments(con)["value_cents"],
@@ -386,15 +392,15 @@ def _nw_totals(parts: dict, perms: set) -> dict:
 
 def snapshot_networth(con):
     p = _nw_parts(con)
-    con.execute(f"INSERT INTO networth_snapshots(date,{','.join(NW_PARTS)}) VALUES (?,?,?,?,?,?,?) "
-                f"ON CONFLICT(date) DO UPDATE SET {','.join(f'{k}=excluded.{k}' for k in NW_PARTS)}",
-                (today().isoformat(), *[p[k] for k in NW_PARTS]))
+    con.execute(f"INSERT INTO networth_snapshots(owner_id,date,{','.join(NW_PARTS)}) VALUES (?,?,?,?,?,?,?,?) "
+                f"ON CONFLICT(owner_id,date) DO UPDATE SET {','.join(f'{k}=excluded.{k}' for k in NW_PARTS)}",
+                (owner(), today().isoformat(), *[p[k] for k in NW_PARTS]))
 
 
 def networth_history(con, days: int, perms: set):
     since = (today() - timedelta(days=days)).isoformat()
     out = []
-    for r in rows(con, "SELECT * FROM networth_snapshots WHERE date >= ? ORDER BY date", (since,)):
+    for r in rows(con, "SELECT * FROM networth_snapshots WHERE date >= ? AND owner_id=? ORDER BY date", (since, owner())):
         out.append({"date": r["date"], **_nw_totals(r, perms)})
     return out
 
@@ -402,8 +408,9 @@ def networth_history(con, days: int, perms: set):
 def networth(con, perms: set):
     parts = _nw_parts(con)
     tot = _nw_totals(parts, perms)
-    accts = rows(con, "SELECT id, name, kind, balance_cents, balance_updated, color FROM accounts ORDER BY name COLLATE NOCASE")
-    items = rows(con, "SELECT * FROM networth_items ORDER BY side, value_cents DESC")
+    accts = rows(con, "SELECT id, name, kind, balance_cents, balance_updated, color FROM accounts WHERE owner_id=? "
+                      "ORDER BY name COLLATE NOCASE", (owner(),))
+    items = rows(con, "SELECT * FROM networth_items WHERE owner_id=? ORDER BY side, value_cents DESC", (owner(),))
     assets = [{"source": "account", **a} for a in accts if a["kind"] in BANK or a["kind"] == "other"]
     liabs = [{"source": "account", **a} for a in accts if a["kind"] in ("credit", "loan")]
     if "investments:read" in perms:
@@ -415,7 +422,7 @@ def networth(con, perms: set):
             {"source": "item", **i, "balance_cents": i["value_cents"] if i["active"] else 0,
              "label": (ASSET_CATS if i["side"] == "asset" else LIAB_CATS).get(i["category"], i["category"])})
     # change vs. the closest snapshot on/before each lookback date
-    snaps = rows(con, "SELECT * FROM networth_snapshots ORDER BY date")
+    snaps = rows(con, "SELECT * FROM networth_snapshots WHERE owner_id=? ORDER BY date", (owner(),))
     t = today()
     changes = {}
     for label, d in (("30d", 30), ("90d", 90), ("1y", 365)):

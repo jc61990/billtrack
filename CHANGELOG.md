@@ -1,5 +1,29 @@
 # Changelog
 
+## 3.0.0 - 2026-10-17
+### Changed (breaking)
+- **Admins and users are separate.** Admins run the system only (no finance pages or data); users manage only
+  their own finances (no server settings). Roles are `admin` and `user` (member/viewer and per-user permission
+  removal are gone).
+- **Private data per user.** Every finance table has `owner_id`; every query, insert, update, delete and foreign
+  key check is scoped to the signed-in user. Scope is set in middleware from the credential and read through
+  `scope.owner()`, which raises when no user is in scope (fail closed, 403 for admins).
+- Scheduler, alerts, net worth snapshots, Plaid sync and the calendar feed run per user in that user's scope.
+- Pay-week start is per user (Settings → Profile); the system value is the default for new users.
+- Bank links (Plaid) belong to each user (new **Bank links** page); Plaid API keys stay an admin setting.
+- Calendar subscription is a private per-user link (Settings → Calendar app); the global `BT_ICS_TOKEN` is gone.
+- Upgrade: existing data is assigned to the oldest admin, who becomes a user; setup asks for a new admin account.
+### Added
+- **Registration** with **admin approval** (`approval` / `invite_only` / `closed`), Create an account on the sign-in
+  page, pending accounts can't sign in (told only after the correct password), admins alerted, users emailed on
+  approval, throttled per IP, unique username and email.
+- **Invite codes**: generate (uses, expiry, note, optional email + link), revoke, see state and who used each code.
+- **Admin overview**: counts, pending sign-ups, setup checklist; **guided setup** tour (auto on first admin sign-in)
+  that switches tabs and highlights each setting with Back / Next / Finish.
+- Tests: role separation, cross-user isolation on every finance route, registration/approval/invite-code flows.
+### Removed
+- Email invite links (replaced by invite codes), admin-side Bank links tab, member/viewer roles.
+
 ## 2.10.0 - 2026-10-17
 ### Changed
 - **Per-user time zone, detected from the browser.** On sign-in the app compares the device's zone with the

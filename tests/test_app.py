@@ -13,7 +13,7 @@ H = {"X-BT": "1"}
 PW = "correct horse battery"
 
 
-def mkuser(name, role="admin", email=""):
+def mkuser(name, role="user", email=""):
     db.init()
     with db.tx() as con:
         con.execute("DELETE FROM users WHERE username=?", (name,))
@@ -31,7 +31,15 @@ def login(name):
 
 @pytest.fixture
 def admin():
-    mkuser("jc", "admin", "jc@example.com")
+    """System admin: settings, users, backups. No finance access."""
+    mkuser("root", "admin", "root@example.com")
+    return login("root")
+
+
+@pytest.fixture
+def user():
+    """Regular user: their own finances only."""
+    mkuser("jc", "user", "jc@example.com")
     return login("jc")
 
 
@@ -53,8 +61,8 @@ def test_security_basics():
     assert c.get("/docs").status_code == 404 and c.get("/api/openapi.json").status_code == 401
 
 
-def test_flow_and_overrides(admin):
-    c, t = admin, ledger.today()
+def test_flow_and_overrides(user):
+    c, t = user, ledger.today()
     acct = c.post("/api/accounts", json={"name": "Checking"}, headers=H).json()
     bill = c.post("/api/bills", json={"name": "Electric", "amount_cents": 12000, "account_id": acct["id"],
                                       "start_date": t.isoformat(), "recurrence": "weekly"}, headers=H).json()
@@ -80,34 +88,63 @@ def test_flow_and_overrides(admin):
     assert c.post("/api/payments", json={"bill_id": bill["id"], "due_date": t.isoformat()}, headers=H).status_code == 201
     ov = c.get(f"/api/reports/overview?start={t - timedelta(days=30)}&end={t + timedelta(days=30)}&group=month").json()
     assert ov["in_cents"] > 0 and ov["series"] and "net_worth_cents" in ov
-    ics = c.get("/cal/testtoken123.ics").text
+    feed = user.post("/api/me/calendar-feed", headers=H).json()["path"]
+    ics = TestClient(app).get(feed).text                                   # no cookie needed; the token is the user
+    assert TestClient(app).get("/cal/testtoken123.ics").status_code == 404
     assert "Electric" in ics and "Payday" in ics
 
 
-def test_roles_and_permissions(admin):
-    mkuser("viewer1", "viewer")
-    v = login("viewer1")
-    assert v.get("/api/week").status_code == 200
-    assert v.post("/api/accounts", json={"name": "x"}, headers=H).status_code == 403
-    assert v.get("/api/admin/users").status_code == 403
-    assert "admin" not in v.get("/api/me").json()["perms"]
-    mkuser("member1", "member")
-    m = login("member1")
-    assert m.post("/api/accounts", json={"name": "m"}, headers=H).status_code == 201
-    uid = [u for u in admin.get("/api/admin/users").json() if u["username"] == "member1"][0]["id"]
-    r = admin.put(f"/api/admin/users/{uid}", json={"role": "member", "perms_deny": ["investments:read"]}, headers=H)
-    assert r.status_code == 200
-    assert m.get("/api/investments").status_code == 403
-    assert admin.put(f"/api/admin/users/{uid}", json={"role": "member", "perms_deny": ["admin"]},
-                     headers=H).status_code == 422
+def test_roles_and_permissions(admin, user):
+    # admins run the system and never touch finances
+    for path in ("/api/week", "/api/accounts", "/api/home", "/api/networth", "/api/investments"):
+        assert admin.get(path).status_code == 403, path
+    assert admin.post("/api/accounts", json={"name": "x"}, headers=H).status_code == 403
+    assert admin.get("/api/admin/users").status_code == 200
+    # users do finances and never touch the system
+    assert user.get("/api/week").status_code == 200
+    for path in ("/api/admin/users", "/api/admin/settings", "/api/admin/system", "/api/admin/codes", "/api/admin/backups"):
+        assert user.get(path).status_code == 403, path
+    assert user.put("/api/admin/settings", json={"timezone": "UTC"}, headers=H).status_code == 403
+    assert set(admin.get("/api/me").json()["perms"]) == {"admin", "self"}
     # disabling kills sessions
-    admin.put(f"/api/admin/users/{uid}", json={"role": "member", "disabled": True}, headers=H)
-    assert m.get("/api/me").status_code == 401
+    uid = [u for u in admin.get("/api/admin/users").json() if u["username"] == "jc"][0]["id"]
+    admin.put(f"/api/admin/users/{uid}", json={"role": "user", "disabled": True}, headers=H)
+    assert user.get("/api/me").status_code == 401
+    admin.put(f"/api/admin/users/{uid}", json={"role": "user", "disabled": False}, headers=H)
+
+
+def test_private_data_per_user(admin):
+    """Two users never see, change or link to each other's data, through any route."""
+    mkuser("alice"); mkuser("bob")
+    a, b = login("alice"), login("bob")
+    acct = a.post("/api/accounts", json={"name": "AliceChecking", "balance_cents": 100000}, headers=H).json()
+    bill = a.post("/api/bills", json={"name": "AliceRent", "amount_cents": 90000, "account_id": acct["id"],
+                                      "start_date": ledger.today().isoformat()}, headers=H).json()
+    a.post("/api/expenses", json={"date": ledger.today().isoformat(), "name": "AliceLunch", "amount_cents": 1200}, headers=H)
+    tr = a.post("/api/trackers/items", json={"name": "AliceFund", "target_cents": 100}, headers=H).json()
+    a.post("/api/networth/items", json={"name": "AliceHouse", "side": "asset", "category": "property", "value_cents": 5}, headers=H)
+    import json as _j
+    for path in ("/api/accounts", "/api/bills", "/api/week", "/api/home", "/api/networth", "/api/trackers",
+                 "/api/accounts/overview", f"/api/expenses?start={ledger.today()}&end={ledger.today()}",
+                 f"/api/summary?start={ledger.today()}&end={ledger.today()}"):
+        assert "Alice" not in _j.dumps(b.get(path).json()), path
+    assert b.put(f"/api/bills/{bill['id']}", json={"name": "x", "amount_cents": 1, "start_date": "2026-01-01"}, headers=H).status_code == 404
+    assert b.delete(f"/api/accounts/{acct['id']}", headers=H).status_code == 404
+    assert b.post(f"/api/accounts/{acct['id']}/balance", json={"balance_cents": 1}, headers=H).status_code == 404
+    assert b.post("/api/payments", json={"bill_id": bill["id"], "due_date": ledger.today().isoformat()}, headers=H).status_code == 404
+    assert b.put("/api/overrides", json={"kind": "bill", "item_id": bill["id"], "orig_date": ledger.today().isoformat(),
+                                         "skipped": True}, headers=H).status_code == 404
+    assert b.post("/api/bills", json={"name": "Sneaky", "amount_cents": 1, "start_date": "2026-01-01",
+                                      "account_id": acct["id"]}, headers=H).status_code == 422   # can't link to Alice's account
+    assert b.post("/api/trackers/entries", json={"tracker_id": tr["id"], "date": "2026-01-01", "amount_cents": 5},
+                  headers=H).status_code == 422
+    assert b.get(f"/api/trackers/{tr['id']}/entries").json() == []
+    assert any(x["name"] == "AliceChecking" for x in a.get("/api/accounts").json())
 
 
 def test_last_admin_protected(admin):
     me_id = admin.get("/api/me").json()["id"]
-    assert admin.put(f"/api/admin/users/{me_id}", json={"role": "member"}, headers=H).status_code == 409
+    assert admin.put(f"/api/admin/users/{me_id}", json={"role": "user"}, headers=H).status_code == 409
 
 
 def test_totp_login(admin):
@@ -117,23 +154,23 @@ def test_totp_login(admin):
     rc = admin.post("/api/me/2fa/enable", json={"code": code}, headers=H).json()["recovery_codes"]
     assert len(rc) == 10
     with db.tx() as con:  # secret is sealed, not stored raw
-        enc = con.execute("SELECT totp_secret_enc FROM users WHERE username='jc'").fetchone()[0]
+        enc = con.execute("SELECT totp_secret_enc FROM users WHERE username='root'").fetchone()[0]
     assert s["secret"] not in enc and crypto.unseal(enc, f"totp:{admin.get('/api/me').json()['id']}") == s["secret"]
     c = TestClient(app)
-    r = c.post("/api/login", json={"username": "jc", "password": PW}, headers=H).json()
+    r = c.post("/api/login", json={"username": "root", "password": PW}, headers=H).json()
     assert r["mfa_required"]
     assert c.post("/api/login/mfa", json={"mfa_token": r["mfa_token"], "code": code}, headers=H).status_code == 401  # replay
     assert c.post("/api/login/mfa", json={"mfa_token": r["mfa_token"], "code": rc[0]}, headers=H).status_code == 200
     assert c.get("/api/me").status_code == 200
     c2 = TestClient(app)
-    r = c2.post("/api/login", json={"username": "jc", "password": PW}, headers=H).json()
+    r = c2.post("/api/login", json={"username": "root", "password": PW}, headers=H).json()
     assert c2.post("/api/login/mfa", json={"mfa_token": r["mfa_token"], "code": rc[0]}, headers=H).status_code == 401  # used
 
 
 def test_require_2fa_blocks_until_enrolled(admin):
     settings.update({"require_2fa": True})
     try:
-        mkuser("m2", "member")
+        mkuser("m2", "user")
         m = login("m2")
         assert m.get("/api/week").status_code == 403
         assert m.get("/api/me").json()["mfa_setup_required"] is True
@@ -142,7 +179,7 @@ def test_require_2fa_blocks_until_enrolled(admin):
 
 
 def test_lockout():
-    mkuser("lock1", "member")
+    mkuser("lock1", "user")
     c = TestClient(app)
     for _ in range(security.LOCK_AFTER):
         c.post("/api/login", json={"username": "lock1", "password": "wrong password!"}, headers=H)
@@ -150,37 +187,37 @@ def test_lockout():
     assert c.post("/api/login", json={"username": "lock1", "password": PW}, headers=H).status_code == 401
 
 
-def test_api_tokens(admin):
-    tok = admin.post("/api/me/tokens", json={"name": "cron", "scope": "read"}, headers=H).json()["token"]
+def test_api_tokens(user):
+    tok = user.post("/api/me/tokens", json={"name": "cron", "scope": "read"}, headers=H).json()["token"]
     with db.tx() as con:
         assert not con.execute("SELECT 1 FROM api_tokens WHERE token_hash=?", (tok,)).fetchone()  # only hash stored
     c = TestClient(app)
     auth = {"Authorization": f"Bearer {tok}"}
     assert c.get("/api/week", headers=auth).status_code == 200
     assert c.post("/api/accounts", json={"name": "x"}, headers=auth).status_code == 403     # read scope
-    assert c.get("/api/admin/users", headers=auth).status_code == 403                       # never admin
+    assert c.get("/api/admin/users", headers=auth).status_code == 403                      # never admin
     assert c.post("/api/me/tokens", json={"name": "x"}, headers=auth).status_code == 403     # can't mint tokens
-    w = admin.post("/api/me/tokens", json={"name": "w", "scope": "write"}, headers=H).json()
+    w = user.post("/api/me/tokens", json={"name": "w", "scope": "write"}, headers=H).json()
     acct = c.post("/api/investments/accounts", json={"name": "Brokerage"}, headers={"Authorization": f"Bearer {w['token']}"})
     assert acct.status_code == 201  # no CSRF header needed for bearer
-    admin.delete(f"/api/me/tokens/{w['id']}", headers=H)
+    user.delete(f"/api/me/tokens/{w['id']}", headers=H)
     assert c.get("/api/week", headers={"Authorization": f"Bearer {w['token']}"}).status_code == 401
 
 
-def test_trackers_investments(admin):
-    t = admin.post("/api/trackers/items", json={"name": "Emergency", "target_cents": 100000}, headers=H).json()
-    admin.post("/api/trackers/entries", json={"tracker_id": t["id"], "date": ledger.today().isoformat(),
+def test_trackers_investments(user):
+    t = user.post("/api/trackers/items", json={"name": "Emergency", "target_cents": 100000}, headers=H).json()
+    user.post("/api/trackers/entries", json={"tracker_id": t["id"], "date": ledger.today().isoformat(),
                                               "amount_cents": 50000}, headers=H)
-    tr = [x for x in admin.get("/api/trackers").json() if x["id"] == t["id"]][0]
+    tr = [x for x in user.get("/api/trackers").json() if x["id"] == t["id"]][0]
     assert tr["progress"] == 0.5
     with db.tx() as con:
         assert con.execute("SELECT count(*) FROM notifications WHERE title LIKE 'Emergency: 50%'").fetchone()[0] >= 1
-    a = admin.post("/api/investments/accounts", json={"name": "IRA", "kind": "retirement"}, headers=H).json()
-    admin.post("/api/investments/holdings", json={"inv_account_id": a["id"], "symbol": "vti", "quantity": 10,
+    a = user.post("/api/investments/accounts", json={"name": "IRA", "kind": "retirement"}, headers=H).json()
+    user.post("/api/investments/holdings", json={"inv_account_id": a["id"], "symbol": "vti", "quantity": 10,
                                                   "cost_basis_cents": 200000, "price_cents": 25000}, headers=H)
-    assert admin.post("/api/investments/prices", json={"prices": [{"symbol": "VTI", "price_cents": 30000}]},
+    assert user.post("/api/investments/prices", json={"prices": [{"symbol": "VTI", "price_cents": 30000}]},
                       headers=H).json()["updated_holdings"] == 1
-    inv = admin.get("/api/investments").json()
+    inv = user.get("/api/investments").json()
     acc = [x for x in inv["accounts"] if x["id"] == a["id"]][0]
     assert acc["value_cents"] == 300000 and acc["gain_cents"] == 100000
 
@@ -195,11 +232,11 @@ def test_settings_secrets_sealed(admin):
     settings.update({"timezone": "America/Chicago", "smtp_pass": ""})
 
 
-def test_password_reset_and_invite(admin, monkeypatch):
+def test_password_reset(admin, monkeypatch):
     sent = []
     monkeypatch.setattr(notify, "email_ready", lambda: True)
     monkeypatch.setattr(notify, "send_email", lambda to, s, b: sent.append((to, b)) or True)
-    r = TestClient(app).post("/api/password/forgot", json={"email": "jc@example.com"}, headers=H)
+    r = TestClient(app).post("/api/password/forgot", json={"email": "root@example.com"}, headers=H)
     assert r.status_code == 200 and sent
     tok = sent[-1][1].split("#reset=")[1].split()[0]
     c = TestClient(app)
@@ -207,38 +244,69 @@ def test_password_reset_and_invite(admin, monkeypatch):
     assert c.post("/api/password/reset", json={"token": tok, "password": PW + "!"}, headers=H).status_code == 200
     assert c.post("/api/password/reset", json={"token": tok, "password": PW + "!"}, headers=H).status_code == 400
     assert admin.get("/api/me").status_code == 401  # sessions ended on reset
-    # unknown email gets identical response
     assert TestClient(app).post("/api/password/forgot", json={"email": "nobody@x.com"}, headers=H).json()["ok"]
-    mkuser("jc", "admin", "jc@example.com")
-    a = login("jc")
-    inv = a.post("/api/admin/invites", json={"email": "new@example.com", "role": "viewer"}, headers=H).json()
-    itok = inv["link"].split("#invite=")[1]
+
+
+def test_registration_approval_and_invite_codes(admin):
+    from app.routes import auth as auth_routes
+    auth_routes.register_ip.hits.clear()
+    settings.update({"registration_mode": "approval"})
+    with db.tx() as con:
+        con.execute("DELETE FROM users WHERE username IN ('newbie','coded','coded2','nope')")
     c = TestClient(app)
-    assert c.get(f"/api/invite/info?token={itok}").json()["role"] == "viewer"
-    assert c.post("/api/invite/accept", json={"token": itok, "username": "newbie", "password": PW}, headers=H).status_code == 200
-    assert c.get("/api/me").json()["role"] == "viewer"
-    assert TestClient(app).post("/api/invite/accept", json={"token": itok, "username": "again", "password": PW},
-                                headers=H).status_code == 400
+    assert c.get("/api/register/info").json()["mode"] == "approval"
+    r = c.post("/api/register", json={"username": "newbie", "email": "newbie@example.com", "password": PW}, headers=H)
+    assert r.json()["status"] == "pending"
+    assert c.get("/api/me").status_code == 401                                         # not signed in while pending
+    assert c.post("/api/login", json={"username": "newbie", "password": PW}, headers=H).status_code == 403
+    assert c.post("/api/login", json={"username": "newbie", "password": "wrong password!"}, headers=H).status_code == 401
+    assert any("newbie" in n["title"] for n in admin.get("/api/me/notifications").json())   # admins told
+    pend = admin.get("/api/admin/registrations").json()
+    uid = [u["id"] for u in pend if u["username"] == "newbie"][0]
+    assert admin.post(f"/api/admin/registrations/{uid}/approve", headers=H).status_code == 200
+    assert c.post("/api/login", json={"username": "newbie", "password": PW}, headers=H).status_code == 200
+    assert c.get("/api/week").status_code == 200 and c.get("/api/admin/users").status_code == 403
+    # invite codes skip approval; used-by is tracked
+    code = admin.post("/api/admin/codes", json={"note": "for Kim", "max_uses": 1}, headers=H).json()["code"]
+    assert code.startswith("BT-")
+    c2 = TestClient(app)
+    r = c2.post("/api/register", json={"username": "coded", "email": "kim@example.com", "password": PW,
+                                       "invite_code": code.lower().replace("-", " ")}, headers=H)
+    assert r.json()["status"] == "active" and c2.get("/api/week").status_code == 200   # signed straight in
+    lst = [x for x in admin.get("/api/admin/codes").json() if x["code"] == code][0]
+    assert lst["state"] == "used" and lst["used_by"][0]["email"] == "kim@example.com"
+    r = TestClient(app).post("/api/register", json={"username": "coded2", "email": "x2@example.com", "password": PW,
+                                                    "invite_code": code}, headers=H)
+    assert r.status_code == 400                                                         # single use
+    settings.update({"registration_mode": "invite_only"})
+    assert TestClient(app).post("/api/register", json={"username": "nope", "email": "n@example.com", "password": PW},
+                                headers=H).status_code == 403
+    settings.update({"registration_mode": "closed"})
+    assert TestClient(app).post("/api/register", json={"username": "nope", "email": "n@example.com", "password": PW},
+                                headers=H).status_code == 403
+    settings.update({"registration_mode": "approval"})
+    r = TestClient(app).post("/api/register", json={"username": "newbie2", "email": "newbie@example.com", "password": PW}, headers=H)
+    assert r.status_code == 409                                                        # email already used
 
 
-def test_reminders_and_inbox(admin):
-    r = admin.post("/api/reminders", json={"title": "Call bank", "next_at": "2020-01-01T09:00"}, headers=H)
+def test_reminders_and_inbox(user):
+    r = user.post("/api/reminders", json={"title": "Call bank", "next_at": "2020-01-01T09:00"}, headers=H)
     assert r.status_code == 201
     notify.check_once()
-    n = admin.get("/api/me/notifications").json()
+    n = user.get("/api/me/notifications").json()
     assert any("Call bank" in x["title"] for x in n)
-    assert not [x for x in admin.get("/api/reminders").json() if x["id"] == r.json()["id"]][0]["active"]
+    assert not [x for x in user.get("/api/reminders").json() if x["id"] == r.json()["id"]][0]["active"]
     assert notify.next_reminder("2026-01-31T09:00", "monthly", "2026-01-31T09:00") == "2026-02-28T09:00"
 
 
-def test_audit_log(admin):
-    admin.post("/api/accounts", json={"name": "Audited"}, headers=H)
+def test_audit_log(admin, user):
+    user.post("/api/accounts", json={"name": "Audited"}, headers=H)
     log = admin.get("/api/admin/audit?q=accounts").json()
     assert any(x["action"] == "create accounts" for x in log)
 
 
-def test_db_file_is_encrypted(admin):
-    admin.post("/api/bills", json={"name": "ZZSECRETBILL", "amount_cents": 1, "start_date": "2026-01-01"}, headers=H)
+def test_db_file_is_encrypted(user):
+    user.post("/api/bills", json={"name": "ZZSECRETBILL", "amount_cents": 1, "start_date": "2026-01-01"}, headers=H)
     con = db.connect(); con.execute("PRAGMA wal_checkpoint(TRUNCATE)"); con.close()
     raw = open(os.environ["BT_DB_PATH"], "rb").read()
     assert not raw.startswith(db.PLAIN_HEADER) and b"ZZSECRETBILL" not in raw
@@ -246,8 +314,8 @@ def test_db_file_is_encrypted(admin):
         db.connect(key="cd" * 32)
 
 
-def test_backup_restore_roundtrip(admin, tmp_path):
-    admin.post("/api/accounts", json={"name": "RestoreMe"}, headers=H)
+def test_backup_restore_roundtrip(admin, user, tmp_path):
+    user.post("/api/accounts", json={"name": "RestoreMe"}, headers=H)
     r = admin.post("/api/admin/backup", json={"passphrase": "backup passphrase 1"}, headers=H)
     assert r.status_code == 200 and b"RestoreMe" not in r.content
     bk = tmp_path / "bk.db"
@@ -271,142 +339,140 @@ def test_migrate_v1_plaintext(tmp_path):
     db.encrypt_plaintext(p, "12" * 32)
     con = db.connect(p, "12" * 32)
     db.migrate(con); con.commit()
-    assert db.rows(con, "SELECT role FROM users")[0]["role"] == "admin"
+    # 3.0: the old shared data goes to the original user, who becomes a regular user (setup then adds an admin)
+    assert db.rows(con, "SELECT role FROM users")[0]["role"] == "user"
+    assert db.rows(con, "SELECT owner_id FROM accounts")[0]["owner_id"] == db.rows(con, "SELECT id FROM users")[0]["id"]
     assert db.rows(con, "SELECT kind FROM accounts")[0]["kind"] == "checking"
     assert not con.execute("SELECT 1 FROM sqlite_master WHERE name='notices'").fetchone()
     con.close()
 
 
-def test_bank_accounts_and_cards(admin):
+def test_bank_accounts_and_cards(user):
     with db.tx() as con:
         con.execute("DELETE FROM alert_log"); con.execute("DELETE FROM notifications")
     t = ledger.today()
-    chk = admin.post("/api/accounts", json={"name": "Chk", "kind": "checking", "balance_cents": 50000,
+    chk = user.post("/api/accounts", json={"name": "Chk", "kind": "checking", "balance_cents": 50000,
                                             "low_balance_cents": 20000}, headers=H).json()
-    admin.post("/api/bills", json={"name": "BigBill", "amount_cents": 40000, "account_id": chk["id"],
+    user.post("/api/bills", json={"name": "BigBill", "amount_cents": 40000, "account_id": chk["id"],
                                    "start_date": t.isoformat(), "recurrence": "once"}, headers=H)
-    card = admin.post("/api/accounts", json={"name": "Visa", "kind": "credit", "balance_cents": 1000,
+    card = user.post("/api/accounts", json={"name": "Visa", "kind": "credit", "balance_cents": 1000,
                                              "credit_limit_cents": 100000, "util_alert_pct": 30, "last4": "4417",
                                              "due_day": t.day, "min_payment_cents": 2500}, headers=H).json()
     # full card numbers are refused
-    assert admin.post("/api/accounts", json={"name": "x", "kind": "credit", "last4": "4111111111111111"},
+    assert user.post("/api/accounts", json={"name": "x", "kind": "credit", "last4": "4111111111111111"},
                       headers=H).status_code == 422
-    v = admin.get("/api/accounts/overview").json()
+    v = user.get("/api/accounts/overview").json()
     b = [a for a in v["banks"] if a["id"] == chk["id"]][0]
     assert b["projected_cents"] == 10000 and b["projected_low"] and not b["low"]
     c = [a for a in v["cards"] if a["id"] == card["id"]][0]
     assert c["utilization"] == 0.01 and c["available_cents"] == 99000 and c["days_to_due"] == 0
-    titles = lambda: [n["body"] for n in admin.get("/api/me/notifications").json()]
+    titles = lambda: [n["body"] for n in user.get("/api/me/notifications").json()]
     assert any("Heads up: Chk" in x for x in titles()) and any("Visa payment due" in x for x in titles())
     # cross the utilization threshold -> one alert, not repeated
-    admin.post(f"/api/accounts/{card['id']}/balance", json={"balance_cents": 45000}, headers=H)
-    admin.post(f"/api/accounts/{card['id']}/balance", json={"balance_cents": 46000}, headers=H)
+    user.post(f"/api/accounts/{card['id']}/balance", json={"balance_cents": 45000}, headers=H)
+    user.post(f"/api/accounts/{card['id']}/balance", json={"balance_cents": 46000}, headers=H)
     assert sum("45% utilized" in x for x in titles()) == 1 and not any("46% utilized" in x for x in titles())
     # drop below, then back over -> re-armed
-    admin.post(f"/api/accounts/{card['id']}/balance", json={"balance_cents": 5000}, headers=H)
-    admin.post(f"/api/accounts/{card['id']}/balance", json={"balance_cents": 50000}, headers=H)
+    user.post(f"/api/accounts/{card['id']}/balance", json={"balance_cents": 5000}, headers=H)
+    user.post(f"/api/accounts/{card['id']}/balance", json={"balance_cents": 50000}, headers=H)
     assert any("50% utilized" in x for x in titles())
     # low balance now
-    admin.post(f"/api/accounts/{chk['id']}/balance", json={"balance_cents": 15000}, headers=H)
+    user.post(f"/api/accounts/{chk['id']}/balance", json={"balance_cents": 15000}, headers=H)
     assert any("Low balance: Chk" in x for x in titles())
-    hist = [a for a in admin.get("/api/accounts/overview").json()["banks"] if a["id"] == chk["id"]][0]["history"]
+    hist = [a for a in user.get("/api/accounts/overview").json()["banks"] if a["id"] == chk["id"]][0]["history"]
     assert hist[-1]["balance_cents"] == 15000
     # editing other fields keeps the card's limit etc. (full model round trip)
-    r = admin.put(f"/api/accounts/{card['id']}", json={"name": "Visa 2", "kind": "credit", "balance_cents": 50000,
+    r = user.put(f"/api/accounts/{card['id']}", json={"name": "Visa 2", "kind": "credit", "balance_cents": 50000,
                                                        "credit_limit_cents": 100000, "last4": "4417"}, headers=H)
     assert r.status_code == 200
-    mkuser("v2", "viewer")
+    mkuser("v2", "user")
     v2 = login("v2")
-    assert v2.post(f"/api/accounts/{card['id']}/balance", json={"balance_cents": 1}, headers=H).status_code == 403
-    assert v2.get("/api/accounts/overview").status_code == 200
+    assert v2.post(f"/api/accounts/{card['id']}/balance", json={"balance_cents": 1}, headers=H).status_code == 404
+    assert v2.get("/api/accounts/overview").json()["cards"] == []
 
 
-def test_net_worth(admin):
+def test_net_worth(user):
     with db.tx() as con:
         for t in ("accounts", "networth_items", "networth_snapshots", "inv_accounts"):
             con.execute(f"DELETE FROM {t}")
-    admin.post("/api/accounts", json={"name": "Chk", "kind": "checking", "balance_cents": 300000}, headers=H)
-    admin.post("/api/accounts", json={"name": "Visa", "kind": "credit", "balance_cents": 50000, "credit_limit_cents": 100000}, headers=H)
-    admin.post("/api/accounts", json={"name": "Car loan", "kind": "loan", "balance_cents": 1000000}, headers=H)
-    h = admin.post("/api/networth/items", json={"name": "House", "side": "asset", "category": "property",
+    user.post("/api/accounts", json={"name": "Chk", "kind": "checking", "balance_cents": 300000}, headers=H)
+    user.post("/api/accounts", json={"name": "Visa", "kind": "credit", "balance_cents": 50000, "credit_limit_cents": 100000}, headers=H)
+    user.post("/api/accounts", json={"name": "Car loan", "kind": "loan", "balance_cents": 1000000}, headers=H)
+    h = user.post("/api/networth/items", json={"name": "House", "side": "asset", "category": "property",
                                                 "value_cents": 30000000}, headers=H).json()
-    admin.post("/api/networth/items", json={"name": "Mortgage", "side": "liability", "category": "mortgage",
+    user.post("/api/networth/items", json={"name": "Mortgage", "side": "liability", "category": "mortgage",
                                             "value_cents": 20000000}, headers=H)
-    assert admin.post("/api/networth/items", json={"name": "x", "side": "asset", "category": "mortgage"},
+    assert user.post("/api/networth/items", json={"name": "x", "side": "asset", "category": "mortgage"},
                       headers=H).status_code == 422
-    ia = admin.post("/api/investments/accounts", json={"name": "IRA", "cash_cents": 500000}, headers=H).json()
-    nw = admin.get("/api/networth").json()
+    ia = user.post("/api/investments/accounts", json={"name": "IRA", "cash_cents": 500000}, headers=H).json()
+    nw = user.get("/api/networth").json()
     assert nw["assets_cents"] == 300000 + 500000 + 30000000
     assert nw["liabilities_cents"] == 50000 + 1000000 + 20000000
     assert nw["net_cents"] == nw["assets_cents"] - nw["liabilities_cents"]
-    hist = admin.get("/api/networth/history").json()
+    hist = user.get("/api/networth/history").json()
     assert hist[-1]["net_cents"] == nw["net_cents"]
     # old snapshot -> change figures
     with db.tx() as con:
-        con.execute("INSERT INTO networth_snapshots VALUES (?,?,?,?,?,?,?)",
-                    ((ledger.today() - timedelta(days=40)).isoformat(), 100000, 0, 30000000, 0, 0, 20000000))
-    nw = admin.get("/api/networth").json()
+        uid = con.execute("SELECT id FROM users WHERE username='jc'").fetchone()[0]
+        con.execute("INSERT INTO networth_snapshots VALUES (?,?,?,?,?,?,?,?)",
+                    (uid, (ledger.today() - timedelta(days=40)).isoformat(), 100000, 0, 30000000, 0, 0, 20000000))
+    nw = user.get("/api/networth").json()
     assert nw["changes"]["30d"] == nw["net_cents"] - (100000 + 30000000 - 20000000)
     # overview uses the same number
     t = ledger.today()
-    assert admin.get(f"/api/reports/overview?start={t}&end={t}").json()["net_worth_cents"] == nw["net_cents"]
-    # someone who can't see investments gets a net worth without them
-    mkuser("m3", "member")
-    uid = [u for u in admin.get("/api/admin/users").json() if u["username"] == "m3"][0]["id"]
-    admin.put(f"/api/admin/users/{uid}", json={"role": "member", "perms_deny": ["investments:read"]}, headers=H)
-    m = login("m3")
-    assert m.get("/api/networth").json()["net_cents"] == nw["net_cents"] - 500000
+    assert user.get(f"/api/reports/overview?start={t}&end={t}").json()["net_worth_cents"] == nw["net_cents"]
+    # another user's net worth is their own
+    mkuser("m3", "user")
+    assert login("m3").get("/api/networth").json()["net_cents"] == 0
 
 
-def test_reminders_on_calendar(admin):
+def test_reminders_on_calendar(user):
     t = ledger.today()
     d23 = t.replace(day=23)
-    admin.post("/api/reminders", json={"title": "Dentist", "next_at": f"{d23}T15:30"}, headers=H)
-    admin.post("/api/reminders", json={"title": "Weekly check", "next_at": f"{t}T08:00", "recurrence": "weekly"}, headers=H)
-    occ = admin.get(f"/api/reminders/occurrences?start={t.replace(day=1)}&end={t.replace(day=28)}").json()
+    user.post("/api/reminders", json={"title": "Dentist", "next_at": f"{d23}T15:30"}, headers=H)
+    user.post("/api/reminders", json={"title": "Weekly check", "next_at": f"{t}T08:00", "recurrence": "weekly"}, headers=H)
+    occ = user.get(f"/api/reminders/occurrences?start={t.replace(day=1)}&end={t.replace(day=28)}").json()
     assert any(o["title"] == "Dentist" and o["date"] == d23.isoformat() and o["time"] == "15:30" for o in occ)
     assert sum(o["title"] == "Weekly check" for o in occ) >= 2
-    mkuser("v9", "viewer")
+    mkuser("v9", "user")
     assert all(o["title"] not in ("Dentist",) for o in login("v9").get(
         f"/api/reminders/occurrences?start={t.replace(day=1)}&end={t.replace(day=28)}").json())  # own reminders only
 
 
-def test_end_date_mistake_fixed(admin):
+def test_end_date_mistake_fixed(user):
     t = ledger.today()
     # API now refuses an end date before the first due date
-    r = admin.post("/api/bills", json={"name": "Bad", "amount_cents": 1, "start_date": "2026-10-23",
+    r = user.post("/api/bills", json={"name": "Bad", "amount_cents": 1, "start_date": "2026-10-23",
                                        "end_date": "2026-09-23"}, headers=H)
     assert r.status_code == 422 and "Stop after" in r.text
     # rows saved by older versions get repaired by the migration
     with db.tx() as con:
-        con.execute("INSERT INTO bills(name,amount_cents,start_date,recurrence,end_date) VALUES "
-                    "('OldA',100,'2026-10-23','monthly','2026-09-23'),('OldB',100,'2026-10-01','monthly','2026-10-01'),"
-                    "('Once',100,'2026-10-01','once','2026-10-01'),('Loan',100,'2026-10-01','monthly','2027-03-01')")
+        uid = con.execute("SELECT id FROM users WHERE username='jc'").fetchone()[0]
+        con.execute("INSERT INTO bills(name,amount_cents,start_date,recurrence,end_date,owner_id) VALUES "
+                    "('OldA',100,'2026-10-23','monthly','2026-09-23',?),('OldB',100,'2026-10-01','monthly','2026-10-01',?),"
+                    "('Once',100,'2026-10-01','once','2026-10-01',?),('Loan',100,'2026-10-01','monthly','2027-03-01',?)",
+                    (uid, uid, uid, uid))
         db.migrate(con)
         got = {r["name"]: r["end_date"] for r in con.execute("SELECT name,end_date FROM bills WHERE name IN ('OldA','OldB','Once','Loan')")}
     assert got == {"OldA": None, "OldB": None, "Once": "2026-10-01", "Loan": "2027-03-01"}
-    s = admin.get("/api/summary?start=2026-11-01&end=2026-11-30").json()
+    s = user.get("/api/summary?start=2026-11-01&end=2026-11-30").json()
     assert {"OldA", "OldB"} <= {b["name"] for b in s["bills"]}
 
 
-def test_home_page(admin):
+def test_home_page(user, admin):
     t = ledger.today()
-    admin.post("/api/bills", json={"name": "HomeBill", "amount_cents": 5000, "start_date": (t + timedelta(days=2)).isoformat()}, headers=H)
-    admin.post("/api/bills", json={"name": "LateBill", "amount_cents": 7000, "start_date": (t - timedelta(days=3)).isoformat(),
-                                   "recurrence": "once"}, headers=H)
-    h = admin.get("/api/home").json()
+    user.post("/api/bills", json={"name": "HomeBill", "amount_cents": 5000, "start_date": (t + timedelta(days=2)).isoformat()}, headers=H)
+    user.post("/api/bills", json={"name": "LateBill", "amount_cents": 7000, "start_date": (t - timedelta(days=3)).isoformat(),
+                                  "recurrence": "once"}, headers=H)
+    h = user.get("/api/home").json()
     assert {"week", "upcoming", "overdue", "accounts", "networth", "trackers", "investments", "reminders"} <= set(h)
     assert any(b["name"] == "HomeBill" for b in h["upcoming"]) and any(b["name"] == "LateBill" for b in h["overdue"])
-    mkuser("v7", "viewer")
-    v = login("v7")
-    uid = [u for u in admin.get("/api/admin/users").json() if u["username"] == "v7"][0]["id"]
-    admin.put(f"/api/admin/users/{uid}", json={"role": "viewer", "perms_deny": ["investments:read", "trackers:read"]}, headers=H)
-    hv = v.get("/api/home").json()
-    assert "investments" not in hv and "trackers" not in hv and "week" in hv
+    assert admin.get("/api/home").status_code == 403
+    o = admin.get("/api/admin/overview").json()
+    assert {"users", "pending", "codes_open", "checklist", "setup_done"} <= set(o)
 
-
-def test_upgrade_snapshots_rotate_and_restore(admin, tmp_path):
-    admin.post("/api/accounts", json={"name": "SnapMe"}, headers=H)
+def test_upgrade_snapshots_rotate_and_restore(user, tmp_path):
+    user.post("/api/accounts", json={"name": "SnapMe"}, headers=H)
     import time as _t
     made = []
     for i in range(9):
@@ -424,7 +490,7 @@ def test_upgrade_snapshots_rotate_and_restore(admin, tmp_path):
     assert after <= before or after > 0
 
 
-def test_maintenance_and_server_backups(admin):
+def test_maintenance_and_server_backups(admin, user):
     import shutil as _sh
     _sh.rmtree(db.backup_dir(), ignore_errors=True)
     s = admin.get("/api/admin/system").json()
@@ -436,16 +502,16 @@ def test_maintenance_and_server_backups(admin):
     assert admin.get("/api/admin/system").json()["last"]["compact"]["at"]
     assert admin.post("/api/admin/maintenance/rm-rf", headers=H).status_code == 422
     # manual backup, then change data, then restore it
-    admin.post("/api/accounts", json={"name": "BeforeBackup"}, headers=H)
+    user.post("/api/accounts", json={"name": "BeforeBackup"}, headers=H)
     name = admin.post("/api/admin/backups", json={}, headers=H).json()["name"]
-    admin.post("/api/accounts", json={"name": "AfterBackup"}, headers=H)
+    user.post("/api/accounts", json={"name": "AfterBackup"}, headers=H)
     lst = admin.get("/api/admin/backups").json()
     assert lst[0]["name"] == name and lst[0]["kind"] == "Manual"
     assert admin.post(f"/api/admin/backups/{name}/restore", json={"confirm": "nope"}, headers=H).status_code == 422
     r = admin.post(f"/api/admin/backups/{name}/restore", json={"confirm": "RESTORE"}, headers=H)
     assert r.status_code == 200 and r.json()["safety"].endswith("-safety.db")
-    login_again = login("jc")
-    names = {a["name"] for a in login_again.get("/api/accounts").json()}
+    login_again = login("root")
+    names = {a["name"] for a in login("jc").get("/api/accounts").json()}
     assert "BeforeBackup" in names and "AfterBackup" not in names
     kinds = {b["kind"] for b in login_again.get("/api/admin/backups").json()}
     assert kinds == {"Manual", "Before restore"}
@@ -462,8 +528,7 @@ def test_maintenance_and_server_backups(admin):
         login_again.post("/api/admin/backups", json={}, headers=H); _t.sleep(1.01)
     lst = login_again.get("/api/admin/backups").json()
     assert sum(b["kind"] == "Manual" for b in lst) == 7 and sum(b["kind"] == "Before restore" for b in lst) == 1
-    mkuser("m8", "member")
-    assert login("m8").get("/api/admin/backups").status_code == 403
+    assert login("jc").get("/api/admin/backups").status_code == 403
 
 
 def test_smtp_no_auth_relay(admin, monkeypatch):
@@ -518,30 +583,30 @@ def test_setup_sh_opens_db_only_through_shared_env():
     assert offenders == [], offenders
 
 
-def test_user_time_zone(admin):
+def test_user_time_zone(user):
     from datetime import datetime as _dt
     from zoneinfo import ZoneInfo
     settings.update({"timezone": "Pacific/Kiritimati"})            # UTC+14
     try:
-        assert admin.put("/api/me/timezone", json={"timezone": "Mars/Olympus"}, headers=H).status_code == 422
-        assert admin.put("/api/me/timezone", json={"timezone": "Pacific/Pago_Pago"}, headers=H).json()["ok"]   # UTC-11
-        me = admin.get("/api/me").json()
+        assert user.put("/api/me/timezone", json={"timezone": "Mars/Olympus"}, headers=H).status_code == 422
+        assert user.put("/api/me/timezone", json={"timezone": "Pacific/Pago_Pago"}, headers=H).json()["ok"]   # UTC-11
+        me = user.get("/api/me").json()
         assert me["timezone"] == "Pacific/Pago_Pago" and me["system_timezone"] == "Pacific/Kiritimati"
         assert me["today"] == _dt.now(ZoneInfo("Pacific/Pago_Pago")).date().isoformat()
         assert me["today"] != _dt.now(ZoneInfo("Pacific/Kiritimati")).date().isoformat()   # 25 h apart: always differs
-        w = admin.get("/api/week").json()
+        w = user.get("/api/week").json()
         assert w["start"] <= me["today"] <= w["end"]
         # manual choice wins over the device
         p = me["prefs"]; p.update(tz_auto=False, timezone="Europe/London")
-        admin.put("/api/me", json={"display_name": "", "email": me["email"], "prefs": p}, headers=H)
-        assert admin.put("/api/me/timezone", json={"timezone": "Asia/Tokyo"}, headers=H).json()["ok"] is False
-        assert admin.get("/api/me").json()["timezone"] == "Europe/London"
+        user.put("/api/me", json={"display_name": "", "email": me["email"], "prefs": p}, headers=H)
+        assert user.put("/api/me/timezone", json={"timezone": "Asia/Tokyo"}, headers=H).json()["ok"] is False
+        assert user.get("/api/me").json()["timezone"] == "Europe/London"
         # reminders fire on the user's wall clock, not the server default
         local_now = _dt.now(ZoneInfo("Europe/London")).strftime("%Y-%m-%dT%H:%M")
-        rid = admin.post("/api/reminders", json={"title": "TZ check", "next_at": local_now}, headers=H).json()["id"]
+        rid = user.post("/api/reminders", json={"title": "TZ check", "next_at": local_now}, headers=H).json()["id"]
         notify.check_once()
-        assert not [r for r in admin.get("/api/reminders").json() if r["id"] == rid][0]["active"]
+        assert not [r for r in user.get("/api/reminders").json() if r["id"] == rid][0]["active"]
     finally:
         settings.update({"timezone": "America/Chicago"})
-        p = admin.get("/api/me").json()["prefs"]; p.update(tz_auto=True, timezone="")
-        admin.put("/api/me", json={"display_name": "", "email": "jc@example.com", "prefs": p}, headers=H)
+        p = user.get("/api/me").json()["prefs"]; p.update(tz_auto=True, timezone="")
+        user.put("/api/me", json={"display_name": "", "email": "jc@example.com", "prefs": p}, headers=H)

@@ -31,9 +31,12 @@ def me(p: Principal = Self):
         unread = con.execute("SELECT count(*) FROM notifications WHERE user_id=? AND read_at IS NULL",
                              (p.user_id,)).fetchone()[0]
     return {"id": u["id"], "username": u["username"], "display_name": u["display_name"], "email": u["email"],
+            "has_feed": bool(u["ics_token_hash"]),
             "role": u["role"], "perms": sorted(p.perms), "totp_enabled": bool(u["totp_enabled"]),
             "mfa_setup_required": p.mfa_setup_required, "prefs": notify.prefs(u), "unread": unread,
-            "version": __version__, "week_start": settings.get("week_start"), "today": ledger.today().isoformat(),
+            "version": __version__,
+            "week_start": notify.prefs(u).get("week_start") if notify.prefs(u).get("week_start") is not None else settings.get("week_start"),
+            "status": u["status"], "today": ledger.today().isoformat(),
             "timezone": settings.user_tz_name(notify.prefs(u)) or settings.get("timezone"),
             "system_timezone": settings.get("timezone"), "ics": bool(config.ICS_TOKEN),
             "email_ready": notify.email_ready(), "push_server": settings.get("ntfy_server"), "via": p.via}
@@ -51,6 +54,7 @@ class Prefs(In):
     balance_alerts: bool = True
     timezone: Annotated[str, StringConstraints(max_length=64)] = ""   # "" = system default
     tz_auto: bool = True                                               # follow this browser's zone
+    week_start: Annotated[int, Field(ge=0, le=6)] | None = None        # this user's pay week; None = system default
 
 
 class MeIn(In):
@@ -80,6 +84,25 @@ def update_me(body: MeIn, request: Request, p: Principal = SelfSession):
             audit(con, request, "email changed")
         con.execute("UPDATE users SET display_name=?, email=?, prefs=? WHERE id=?",
                     (body.display_name, body.email, json.dumps(body.prefs.model_dump()), p.user_id))
+    return {"ok": True}
+
+
+@r.post("/me/calendar-feed")
+def new_feed(request: Request, p: Principal = Depends(require("finance:read", session_only=True))):
+    """Private calendar subscription URL for YOUR bills and paydays. Shown once; making a new one revokes the old."""
+    tok = crypto.new_token()
+    with tx() as con:
+        con.execute("UPDATE users SET ics_token_hash=? WHERE id=?", (crypto.token_hash(tok), p.user_id))
+        audit(con, request, "calendar feed created")
+    base = settings.get("base_url") or ""
+    return {"url": f"{base}/cal/{tok}.ics", "path": f"/cal/{tok}.ics"}
+
+
+@r.delete("/me/calendar-feed")
+def drop_feed(request: Request, p: Principal = SelfSession):
+    with tx() as con:
+        con.execute("UPDATE users SET ics_token_hash=NULL WHERE id=?", (p.user_id,))
+        audit(con, request, "calendar feed revoked")
     return {"ok": True}
 
 

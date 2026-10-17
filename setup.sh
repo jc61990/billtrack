@@ -330,6 +330,23 @@ systemctl enable --now billtrack
 systemctl restart billtrack
 
 USERS=$(manage_py "from app import db;db.init();c=db.connect();print(c.execute('select count(*) from users').fetchone()[0])")
+ADMINS=$(manage_py "from app import db;c=db.connect();print(c.execute(\"select count(*) from users where role='admin'\").fetchone()[0])")
+if [[ "$USERS" != "0" && "$ADMINS" == "0" ]]; then
+  echo
+  echo "==> Admin account needed"
+  echo "    From 3.0, admins only run the system (settings, users, approvals, backups) and users only do finances."
+  echo "    Your existing data now belongs to your existing login, which is a regular user. Create a separate admin:"
+  if [[ $INTERACTIVE == 1 ]]; then
+    while true; do
+      U=$(ask "New admin username (letters, numbers, . _ -)" "admin")
+      [[ "$U" =~ ^[A-Za-z0-9_.-]{3,32}$ ]] && break
+      echo "  3-32 characters: letters, numbers, . _ -"
+    done
+    manage adduser "$U" admin </dev/tty
+  else
+    echo "  No terminal: run  sudo billtrack-manage adduser <name> admin"
+  fi
+fi
 if [[ "$USERS" == "0" ]]; then
   echo
   echo "==> First-time settings (all changeable later in Admin > Settings)"
@@ -340,14 +357,14 @@ if [[ "$USERS" == "0" ]]; then
     echo "  Unknown time zone. Examples: America/Chicago, America/New_York, Europe/London"
   done
   while true; do
-    WD=$(ask "Which day does your pay week start? (Mon/Tue/Wed/Thu/Fri/Sat/Sun)" "Mon")
+    WD=$(ask "Default pay-week start for new users (each user can change theirs) (Mon/Tue/Wed/Thu/Fri/Sat/Sun)" "Mon")
     case "${WD,,}" in mon*) N=0;; tue*) N=1;; wed*) N=2;; thu*) N=3;; fri*) N=4;; sat*) N=5;; sun*) N=6;; *) N=;; esac
     [[ -n "$N" ]] && { manage_py "from app import settings; settings.update({'week_start': $N, 'digest_weekday': $N})"; break; }
     echo "  Type a day, e.g. Fri"
   done
   if [[ $INTERACTIVE == 1 ]]; then
     while true; do
-      U=$(ask "Admin username (letters, numbers, . _ -)" "")
+      U=$(ask "Admin username - admins run the system; people sign up for their own accounts later" "admin")
       [[ "$U" =~ ^[A-Za-z0-9_.-]{3,32}$ ]] && break
       echo "  3-32 characters: letters, numbers, . _ -"
     done

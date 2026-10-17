@@ -4,7 +4,7 @@ Self-hosted bill, paycheck, savings and investment tracker built around the **we
 roles, two-factor sign-in, alerts by email and phone push, and encryption at every layer: the database on disk,
 secrets inside it, and every byte of browser traffic.
 
-![version](https://img.shields.io/badge/version-2.10.0-blue)
+![version](https://img.shields.io/badge/version-3.0.0-blue)
 
 ## Features
 
@@ -128,21 +128,40 @@ HTTPS is required, not optional: login cookies are HTTPS-only and browsers only 
 WebCrypto on HTTPS pages. Install to the home screen with *Add to Home Screen* (iPhone) / *Install app* (Android,
 Chrome, Edge). Run **one** app process (default): channels and pending 2FA sign-ins are held in memory.
 
-## Roles
+## Accounts, roles and sign-up
 
-| Role | Can |
-|---|---|
-| admin | Everything, including the admin portal |
-| member | View and edit bills, income, trackers, investments; own reminders and settings |
-| viewer | View only; own reminders and settings |
+| Account type | Can | Can't |
+|---|---|---|
+| **Admin** | Admin portal: settings (email, sign-ups, security, Plaid keys), users, approvals, invite codes, audit log, backups and maintenance | Open any finance page or see anyone's money |
+| **User** | Their **own private** bills, income, accounts, net worth, trackers, investments, bank links, reminders, calendar link | Change any server setting, or see another user's data |
 
-Admins can additionally remove *Edit bills & income*, *See/Edit trackers*, *See/Edit investments*, *Use reminders*
-from any member or viewer.
+Every financial record has an owner. If a request ever reaches finance code without a user in scope (an admin,
+a script, a bug), the server refuses it rather than return anything. A test has a second user try to read,
+change or link into another user's data through every route.
+
+**Sign-up** (Admin → Settings → Sign-ups):
+- *Anyone can sign up; an admin approves them* (default). The sign-in page shows **Create an account**. New
+  sign-ups wait in Admin → Users → *Waiting for approval*. Admins get an in-app alert (and email); approved people
+  get an email.
+- *Invite code required*, or *Closed* (admins create accounts).
+- **Invite codes** (Admin → Invite codes): `BT-XXXX-XXXX-XXXX-XXXX`, 80 random bits, limited uses and expiry,
+  optional email straight from the portal (with a link that fills the code in). On the sign-up page the person
+  ticks **I have an invite code** and skips approval. The list shows each code's state and who used it (email,
+  username, time). Codes are stored hashed for lookup and sealed for display.
+
+**First run** asks only for an admin account. On first sign-in the admin gets a **guided setup** that walks
+through the public address, email, security, sign-up mode, invite codes and approvals, highlighting each spot with
+Back / Next. Rerun it from Admin → Overview, which also shows a setup checklist and pending sign-ups.
+
+**Upgrading from 2.x:** your existing data moves into your existing login, which becomes a regular **user**;
+`setup.sh` then asks you to create a separate **admin** account. Other existing accounts become users with their
+own (empty) data. Bank links move from the admin portal to each user's **Bank links** page; the calendar
+subscription becomes a private link per user (Settings → Calendar app).
 
 ## Admin CLI
 `setup.sh` installs `billtrack-manage` (Docker: `docker compose exec billtrack python -m app.manage ...`).
 ```
-billtrack-manage adduser <name> [admin|member|viewer]
+billtrack-manage adduser <name> [admin|user]
 billtrack-manage passwd <name>          # sign them out everywhere
 billtrack-manage reset-2fa <name>       # locked-out user lost their phone and codes
 billtrack-manage unlock <name>
@@ -217,7 +236,7 @@ database is kept as `billtrack.db.before-import-*`), then start the service.
    connections with real data.
 2. In the Plaid dashboard: Developers → Keys. Copy the **client ID** and the **Production** secret.
 3. BillTrack: **Admin → Settings → Bank sync (Plaid)**, paste both, environment *Production*, save.
-4. **Admin → Bank links → Connect a bank.** Pick the date to import spending from (default: 1st of this month),
+4. Signed in as a **user**: **Bank links → Connect a bank.** Pick the date to import spending from (default: 1st of this month),
    then sign in to your bank in Plaid's window (Capital One, Citi and Schwab use their own sign-in pages).
 5. For each bank account choose how BillTrack uses it: an existing account, **＋ New BillTrack account**,
    **＋ New investment account** (brokerage/retirement), or *Don't use*.
@@ -287,7 +306,7 @@ pip install -r requirements.txt pytest httpx
 export BT_DB_KEY=$(python -c 'import secrets;print(secrets.token_hex(32))') BT_COOKIE_SECURE=false
 python -m app.manage adduser dev admin
 uvicorn app.main:app --reload --port 8080
-python -m pytest -q        # 43 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
+python -m pytest -q        # 45 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
 pip-audit -r requirements.txt
 ```
 

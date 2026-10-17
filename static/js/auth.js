@@ -22,7 +22,7 @@ export async function showAuth(cb) {
   } catch { /* fall through to sign-in */ }
   const hash = new URLSearchParams(location.hash.slice(1));
   if (hash.get("reset")) return resetScreen(hash.get("reset"));
-  if (hash.get("invite")) return inviteScreen(hash.get("invite"));
+  if (hash.has("register")) return registerScreen(hash.get("register") || "");
   loginScreen();
 }
 
@@ -34,7 +34,10 @@ function loginScreen(msg) {
   const btn = el("button", { type: "submit", class: "primary wide" }, "Sign in");
   const f = el("form", { class: "stack" }, el("h1", {}, "Sign in"), msg ? el("p", { class: "ok" }, msg) : null,
     el("label", {}, "Username", user), el("label", {}, "Password", pw), e, btn,
-    el("button", { type: "button", class: "link", onclick: forgotScreen }, "Forgot password?"));
+    el("div", { class: "spread" },
+      el("button", { type: "button", class: "link", onclick: forgotScreen }, "Forgot password?"),
+      el("button", { type: "button", class: "link", id: "toRegister", hidden: true, onclick: () => registerScreen("") }, "Create an account")));
+  api("GET", "/api/register/info").then((i) => { const b = document.getElementById("toRegister"); if (b) b.hidden = i.mode === "closed"; }).catch(() => {});
   f.onsubmit = (ev) => { ev.preventDefault(); e.textContent = ""; busy(btn, async () => {
     try {
       const r = await api("POST", "/api/login", { username: user.value.trim(), password: pw.value });
@@ -90,21 +93,39 @@ function resetScreen(token) {
   card(f); a.focus();
 }
 
-async function inviteScreen(token) {
-  let info;
-  try { info = await api("GET", `/api/invite/info?token=${encodeURIComponent(token)}`); }
-  catch (x) { clearHash(); return loginScreen(); }
+async function registerScreen(prefill) {
+  let mode = "approval";
+  try { mode = (await api("GET", "/api/register/info")).mode; } catch { /* ignore */ }
+  if (mode === "closed") { clearHash(); return loginScreen("Sign-ups are closed. Ask an admin for an account."); }
   const e = err(), [a, b, fields] = newPwFields(), btn = el("button", { type: "submit", class: "primary wide" }, "Create account");
   const user = el("input", { required: true, minlength: 3, maxlength: 32, pattern: "[A-Za-z0-9_.\\-]+", autocomplete: "username", autocapitalize: "none" });
   const name = el("input", { maxlength: 60, autocomplete: "name" });
+  const email = el("input", { type: "email", required: true, maxlength: 254, autocomplete: "email" });
+  const has = el("input", { type: "checkbox", checked: !!prefill || mode === "invite_only", disabled: mode === "invite_only" });
+  const code = el("input", { value: prefill, maxlength: 40, autocomplete: "off", autocapitalize: "characters", placeholder: "BT-XXXX-XXXX-XXXX-XXXX" });
+  const codeRow = el("label", {}, "Invite code", code);
+  const sync = () => { codeRow.hidden = !has.checked; code.required = has.checked; };
+  has.addEventListener("change", sync); sync();
   const f = el("form", { class: "stack" }, el("h1", {}, "Create your account"),
-    el("p", { class: "muted" }, `Invited as ${info.role} (${info.email}).`),
-    el("label", {}, "Username (letters, numbers, . _ -)", user), el("label", {}, "Your name", name), fields, e, btn);
+    el("p", { class: "muted" }, mode === "invite_only" ? "You need an invite code from an admin."
+      : "An admin approves new accounts. With an invite code you can start right away."),
+    el("label", {}, "Username (letters, numbers, . _ -)", user), el("label", {}, "Your name", name),
+    el("label", {}, "Email (for approval, alerts and password resets)", email), fields,
+    el("label", { class: "check" }, has, "I have an invite code"), codeRow, e, btn,
+    el("button", { type: "button", class: "link", onclick: () => { clearHash(); loginScreen(); } }, "I already have an account"));
   f.onsubmit = (ev) => { ev.preventDefault(); e.textContent = "";
     if (a.value !== b.value) { e.textContent = "Passwords don't match"; return; }
     busy(btn, async () => {
-      try { await api("POST", "/api/invite/accept", { token, username: user.value.trim(), display_name: name.value.trim(), password: a.value });
-        clearHash(); onSignedIn(); } catch (x) { e.textContent = x.message; }
+      try {
+        const r = await api("POST", "/api/register", { username: user.value.trim(), display_name: name.value.trim(), email: email.value.trim(),
+          password: a.value, invite_code: has.checked ? code.value.trim() : "" });
+        clearHash();
+        if (r.status === "active") return onSignedIn();
+        fill($("#auth"), el("div", { class: "auth-card" }, el("div", { class: "brand" }, el("img", { src: "/icon.svg", alt: "" }), "BillTrack"),
+          el("h1", {}, "Thanks! ✉️"), el("p", {}, "Your account is waiting for an admin to approve it. You'll get an email at "),
+          el("p", {}, el("strong", {}, email.value.trim())), el("p", { class: "muted" }, "Then sign in with the username and password you just chose."),
+          el("button", { type: "button", class: "primary wide", onclick: () => loginScreen() }, "Back to sign in")));
+      } catch (x) { e.textContent = x.message; }
     });
   };
   card(f); user.focus();

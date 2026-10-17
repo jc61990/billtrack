@@ -1,4 +1,4 @@
-import { api, can, el, fmtTs, refresh, S, showDialog, toast, closeDialog, confirmBox , fill } from "../core.js";
+import { api, can, el, fmtTs, refresh, S, showDialog, toast, closeDialog, confirmBox, fill } from "../core.js";
 
 export const title = "Settings";
 
@@ -11,7 +11,8 @@ export async function render(root) {
   fill(root, 
     me.mfa_setup_required ? el("div", { class: "banner warn", role: "alert" },
       "Your administrator requires two-factor authentication. Turn it on below to unlock the app.") : null,
-    profile(me), alertsPrefs(me), security(me, sessions), apiAccess(tokens), calendarFeed(me),
+    profile(me), alertsPrefs(me), security(me, sessions),
+    can("finance:read") ? apiAccess(tokens) : null, can("finance:read") ? calendarFeed(me) : null,
     el("p", { class: "muted" }, `BillTrack ${me.version} · signed in as ${me.username} (${me.role}) · time zone ${me.timezone}`));
 }
 
@@ -22,6 +23,8 @@ function profile(me) {
   const email = el("input", { type: "email", name: "email", value: me.email, maxlength: 254, autocomplete: "email",
     oninput: () => { pwRow.hidden = email.value === me.email; } });
   const name = el("input", { name: "display_name", value: me.display_name, maxlength: 60 });
+  const weekSel = el("select", {}, ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    .map((d, i) => el("option", { value: i, selected: i === me.week_start }, d)));
   const device = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const auto = el("input", { type: "checkbox", checked: me.prefs.tz_auto !== false });
   const zones = (Intl.supportedValuesOf ? Intl.supportedValuesOf("timeZone") : [device]);
@@ -33,6 +36,7 @@ function profile(me) {
     pwRow,
     el("label", { class: "check" }, auto, `Use this device's time zone (${device.replace(/_/g, " ")})`),
     zoneRow,
+    can("finance:read") ? el("label", {}, "My pay week starts on", weekSel) : null,
     el("p", { class: "hint" }, "Your time zone decides what \"today\" is: overdue bills, this week, paydays, reminder times and when your alerts go out."),
     err, el("button", { type: "submit", class: "primary" }, "Save profile"));
   f.onsubmit = async (e) => {
@@ -40,7 +44,8 @@ function profile(me) {
     try {
       await api("PUT", "/api/me", { display_name: name.value, email: email.value.trim(),
         current_password: email.value.trim() !== me.email ? pw.value : null,
-        prefs: { ...me.prefs, tz_auto: auto.checked, timezone: auto.checked ? device : zone.value } });
+        prefs: { ...me.prefs, tz_auto: auto.checked, timezone: auto.checked ? device : zone.value,
+          week_start: can("finance:read") ? Number(weekSel.value) : me.prefs.week_start ?? null } });
       toast("Profile saved"); refresh();
     } catch (x) { err.textContent = x.message; }
   };
@@ -57,6 +62,7 @@ function alertsPrefs(me) {
     check("push_alerts", "Push alerts to my phone (ntfy app)", p.push_alerts),
     el("label", {}, `ntfy topic on ${me.push_server}`, topic,
       el("span", { class: "hint" }, "Install the ntfy app and subscribe to the same topic. Use something long and random.")),
+    !can("finance:read") ? el("p", { class: "hint" }, "As an admin you'll get sign-ups waiting for approval and system problems.") :
     el("fieldset", {}, el("legend", {}, "What to send"),
       check("bill_reminders", "Upcoming bill reminders", p.bill_reminders), check("due_alerts", "Bills due today", p.due_alerts),
       check("overdue_alerts", "Overdue bills", p.overdue_alerts), check("digest", "Weekly money summary", p.digest),
@@ -71,7 +77,7 @@ function alertsPrefs(me) {
     e.preventDefault(); err.textContent = "";
     const prefs = { ...me.prefs, ntfy_topic: topic.value.trim() };
     for (const k of ["email_alerts", "push_alerts", "bill_reminders", "due_alerts", "overdue_alerts", "digest", "tracker_alerts", "balance_alerts"])
-      prefs[k] = f.elements[k].checked;
+      if (f.elements[k]) prefs[k] = f.elements[k].checked;
     try { await api("PUT", "/api/me", { display_name: me.display_name, email: me.email, prefs }); toast("Alert settings saved"); refresh(); }
     catch (x) { err.textContent = x.message; }
   };
@@ -183,7 +189,20 @@ function apiAccess(tokens) {
 }
 
 function calendarFeed(me) {
-  return sec("Calendar app", el("p", { class: "muted" }, me.ics
-    ? `Subscribe from Google, Outlook or iPhone Calendar: ${location.origin}/cal/<token>.ics (ask your admin for the token).`
-    : "The calendar feed is turned off on the server."));
+  const make = async () => {
+    if (me.has_feed && !(await confirmBox("New calendar link?", "The old link stops working. Calendars subscribed to it need the new one.", "Make new link", false))) return;
+    try {
+      const r = await api("POST", "/api/me/calendar-feed");
+      const url = r.url && r.url.startsWith("http") ? r.url : location.origin + r.path;
+      showDialog("Your calendar link", el("div", { class: "stack" },
+        el("p", {}, "Subscribe to this in Google Calendar (Other calendars → From URL), Outlook, or iPhone (Settings → Calendar → Accounts → Add Subscribed Calendar). Keep it private: anyone with it can see your bill dates."),
+        el("code", { class: "secret" }, url),
+        el("button", { type: "button", onclick: () => navigator.clipboard?.writeText(url).then(() => toast("Copied")) }, "Copy"),
+        el("p", { class: "hint" }, "Shown once. You can always make a new one (which turns this one off).")));
+      document.getElementById("dlg").addEventListener("close", refresh, { once: true });
+    } catch (x) { toast(x.message, true); }
+  };
+  return sec("Calendar app", el("p", { class: "muted" }, "Show your bills and paydays in your phone or computer calendar."),
+    el("div", { class: "actions left" }, el("button", { type: "button", class: "primary", onclick: make }, me.has_feed ? "Make a new link" : "Get my calendar link"),
+      me.has_feed ? el("button", { type: "button", class: "danger", onclick: () => api("DELETE", "/api/me/calendar-feed").then(() => { toast("Calendar link turned off"); refresh(); }) }, "Turn off link") : null));
 }

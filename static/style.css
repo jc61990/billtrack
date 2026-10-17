@@ -323,3 +323,18 @@ dialog h3 { margin: 0 0 1rem; font-size: 1.1rem; }
 .list.maint li button { flex: none; }
 /* connect page: nothing of ours should sit above Plaid's full-screen frame */
 iframe[id^="plaid-link-iframe"] { z-index: 2147483647 !important; }
+
+/* ---------- admin overview / guided setup ---------- */
+.checklist { list-style: none; padding: 0; margin: 0; }
+.checklist li { display: grid; grid-template-columns: 1.6rem 1fr auto; gap: 0.6rem; align-items: center; padding: 0.55rem 0; border-bottom: 1px solid var(--rule); }
+.checklist li:last-child { border-bottom: 0; }
+.checklist .ck { font-weight: 700; color: var(--ink-2); text-align: center; }
+.checklist li.done .ck { color: var(--in); }
+.tour { position: fixed; z-index: 150; right: 1rem; bottom: calc(80px + env(safe-area-inset-bottom)); width: min(380px, calc(100vw - 2rem));
+  background: var(--sheet); border: 2px solid var(--focus); border-radius: 14px; padding: 1rem 1.1rem; box-shadow: 0 16px 40px rgb(0 0 0 / 0.35); }
+.tour h3 { margin: 0.2rem 0 0.4rem; }
+@media (min-width: 900px) { .tour { bottom: 1.2rem; } }
+.tour-target { outline: 3px solid var(--focus) !important; outline-offset: 4px; border-radius: 10px; animation: tourpulse 1.6s ease-in-out 2; }
+@keyframes tourpulse { 50% { outline-offset: 9px; } }
+@media (prefers-reduced-motion: reduce) { .tour-target { animation: none; } }
+code.big-code { font-size: 1.25rem; text-align: center; letter-spacing: 0.06em; }

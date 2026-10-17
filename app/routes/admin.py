@@ -13,7 +13,7 @@ from .common import In
 
 r = APIRouter(prefix="/api/admin", tags=["admin"])
 Admin = Depends(require("admin", session_only=True))
-Role = Literal["admin", "member", "viewer"]
+Role = Literal["admin", "user"]
 Username = Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=32,
                                             pattern=r"^[A-Za-z0-9_.\-]+$")]
 Email = Annotated[str, StringConstraints(strip_whitespace=True, max_length=254)]
@@ -254,7 +254,7 @@ def meta(p: Principal = Admin):
 def users(p: Principal = Admin):
     with tx() as con:
         out = rows(con, """SELECT u.id, u.username, u.display_name, u.email, u.role, u.disabled, u.totp_enabled,
-                           u.created_at, u.locked_until, u.perms_deny,
+                           u.created_at, u.locked_until, u.perms_deny, u.status, u.registered_at,
                            (SELECT max(last_seen) FROM sessions s WHERE s.user_id=u.id) last_seen,
                            (SELECT count(*) FROM sessions s WHERE s.user_id=u.id) sessions
                            FROM users u ORDER BY u.username""")
@@ -267,7 +267,7 @@ class UserCreate(In):
     username: Username
     display_name: Annotated[str, StringConstraints(strip_whitespace=True, max_length=60)] = ""
     email: Email = ""
-    role: Role = "member"
+    role: Role = "user"
     password: Annotated[str, StringConstraints(max_length=256)]
 
 
@@ -404,48 +404,139 @@ def revoke_sessions(uid: int, request: Request, p: Principal = Admin):
     return {"ok": True}
 
 
-# ---------- invites ----------
-class InviteIn(In):
-    email: Email
-    role: Role = "member"
-    send: bool = True
-
-
-@r.get("/invites")
-def invites(p: Principal = Admin):
+# ---------- registrations (approval) ----------
+@r.get("/registrations")
+def registrations(p: Principal = Admin):
     with tx() as con:
-        return rows(con, "SELECT id, email, role, created_at, expires_at, used_at FROM invites ORDER BY id DESC LIMIT 100")
+        return rows(con, "SELECT id, username, display_name, email, registered_at, status FROM users "
+                         "WHERE status IN ('pending','rejected') ORDER BY status, registered_at DESC LIMIT 200")
 
 
-@r.post("/invites", status_code=201)
-def create_invite(body: InviteIn, request: Request, p: Principal = Admin):
-    if not notify.valid_email(body.email):
+def _decide(uid, approve, request, p):
+    with tx() as con:
+        u = con.execute("SELECT * FROM users WHERE id=? AND status IN ('pending','rejected')", (uid,)).fetchone()
+        if not u:
+            raise HTTPException(404, "No such sign-up")
+        con.execute("UPDATE users SET status=?, approved_by=? WHERE id=?", ("active" if approve else "rejected", p.user_id, uid))
+        audit(con, request, "sign-up approved" if approve else "sign-up rejected", u["username"], u["email"])
+    if approve and u["email"] and notify.email_ready():
+        base = settings.get("base_url")
+        try:
+            notify._enqueue("email", u["email"], "Your BillTrack account is ready",
+                            f"Hi {u['display_name'] or u['username']},\n\nAn admin approved your account. Sign in as "
+                            f"'{u['username']}'" + (f" at {base}" if base else "") + ".")
+        except Exception:
+            pass
+    return {"ok": True}
+
+
+@r.post("/registrations/{uid}/approve")
+def approve(uid: int, request: Request, p: Principal = Admin):
+    return _decide(uid, True, request, p)
+
+
+@r.post("/registrations/{uid}/reject")
+def reject(uid: int, request: Request, p: Principal = Admin):
+    return _decide(uid, False, request, p)
+
+
+# ---------- invite codes ----------
+def _new_code() -> str:
+    import base64
+    import secrets as _s
+    raw = base64.b32encode(_s.token_bytes(10)).decode()          # 80 bits, A-Z2-7
+    return f"BT-{raw[0:4]}-{raw[4:8]}-{raw[8:12]}-{raw[12:16]}"
+
+
+@r.get("/codes")
+def codes(p: Principal = Admin):
+    with tx() as con:
+        cs = rows(con, "SELECT c.*, a.username AS created_by_name FROM invite_codes c LEFT JOIN users a ON a.id=c.created_by "
+                       "ORDER BY c.id DESC LIMIT 300")
+        uses = rows(con, "SELECT code_id, username, email, used_at FROM invite_code_uses ORDER BY used_at")
+    n = iso(now_utc())
+    for c in cs:
+        c["code"] = crypto.unseal(c.pop("code_enc"), f"invite:{c['id']}")
+        c.pop("code_hash")
+        c["used_by"] = [x for x in uses if x["code_id"] == c["id"]]
+        c["state"] = ("revoked" if c["revoked"] else "used" if c["uses"] >= c["max_uses"]
+                      else "expired" if c["expires_at"] and c["expires_at"] < n else "unused" if not c["uses"] else "active")
+    return cs
+
+
+class CodeIn(In):
+    note: Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)] = ""
+    max_uses: Annotated[int, Field(ge=1, le=100)] = 1
+    expires_days: Annotated[int, Field(ge=0, le=365)] = 14
+    email: Email = ""
+
+
+@r.post("/codes", status_code=201)
+def create_code(body: CodeIn, request: Request, p: Principal = Admin):
+    if body.email and not notify.valid_email(body.email):
         raise HTTPException(422, "Invalid email")
-    if not settings.get("base_url"):
-        raise HTTPException(422, "Set the public URL (Admin > Settings) first so invite links work")
-    tok = crypto.new_token()
-    link = f"{settings.get('base_url')}/#invite={tok}"
+    code = _new_code()
+    from .auth import normalize_code
+    with tx() as con:
+        cid = con.execute("INSERT INTO invite_codes(code_hash,code_enc,note,created_by,created_at,expires_at,max_uses,emailed_to) "
+                          "VALUES (?,?,?,?,?,?,?,?)",
+                          (crypto.token_hash(normalize_code(code)), "", body.note, p.user_id, iso(now_utc()),
+                           iso(now_utc() + timedelta(days=body.expires_days)) if body.expires_days else None,
+                           body.max_uses, body.email)).lastrowid
+        con.execute("UPDATE invite_codes SET code_enc=? WHERE id=?", (crypto.seal(code, f"invite:{cid}"), cid))
+        audit(con, request, "invite code created", f"#{cid}", f"uses={body.max_uses} note={body.note[:40]}")
+    base = settings.get("base_url")
+    link = f"{base}/#register={code}" if base else ""
     sent = False
-    with tx() as con:
-        con.execute("INSERT INTO invites(token_hash,email,role,created_by,created_at,expires_at) VALUES (?,?,?,?,?,?)",
-                    (crypto.token_hash(tok), body.email, body.role, p.user_id, iso(now_utc()),
-                     iso(now_utc() + timedelta(days=3))))
-        if body.send and notify.email_ready():
-            try:
-                sent = notify.send_email(body.email, "You're invited to BillTrack",
-                                         f"You've been invited to BillTrack as a {body.role}.\n\n"
-                                         f"Create your login here (expires in 3 days):\n{link}")
-            except Exception as e:
-                raise HTTPException(502, f"Invite saved but email failed: {type(e).__name__}") from None
-        audit(con, request, "invite created", body.email, f"role={body.role} emailed={sent}")
-    return {"link": link, "emailed": sent}
+    if body.email and notify.email_ready():
+        sent = notify._enqueue("email", body.email, "Your BillTrack invite",
+                               "You've been invited to BillTrack.\n\n" + (f"Sign up here: {link}\n\n" if link else "")
+                               + f"Invite code: {code}\n(Tick \"I have an invite code\" on the sign-up page.)") == "queued"
+    return {"id": cid, "code": code, "link": link, "emailed": sent}
 
 
-@r.delete("/invites/{iid}")
-def delete_invite(iid: int, request: Request, p: Principal = Admin):
+@r.delete("/codes/{cid}")
+def revoke_code(cid: int, request: Request, p: Principal = Admin):
     with tx() as con:
-        con.execute("DELETE FROM invites WHERE id=?", (iid,))
-        audit(con, request, "invite revoked", iid)
+        con.execute("UPDATE invite_codes SET revoked=1 WHERE id=?", (cid,))
+        audit(con, request, "invite code revoked", f"#{cid}")
+    return {"ok": True}
+
+
+# ---------- admin dashboard / guided setup ----------
+@r.get("/overview")
+def admin_overview(p: Principal = Admin):
+    from .. import keys as _keys
+    with tx() as con:
+        cnt = lambda q, *a: con.execute(q, a).fetchone()[0]
+        me = con.execute("SELECT totp_enabled FROM users WHERE id=?", (p.user_id,)).fetchone()
+        out = {
+            "users": cnt("SELECT count(*) FROM users WHERE role='user' AND status='active'"),
+            "admins": cnt("SELECT count(*) FROM users WHERE role='admin'"),
+            "pending": cnt("SELECT count(*) FROM users WHERE status='pending'"),
+            "codes_open": cnt("SELECT count(*) FROM invite_codes WHERE revoked=0 AND uses<max_uses AND (expires_at IS NULL OR expires_at>?)",
+                              iso(now_utc())),
+            "setup_done": bool(con.execute("SELECT 1 FROM meta WHERE key='setup_done'").fetchone()),
+        }
+    out["checklist"] = {
+        "base_url": bool(settings.get("base_url")),
+        "timezone": True,
+        "email": notify.email_ready(),
+        "my_2fa": bool(me["totp_enabled"]),
+        "registration": settings.get("registration_mode"),
+        "passphrase": _keys.enabled(),
+        "backups": len(list_backups()),
+    }
+    return out
+
+
+@r.post("/setup-done")
+def setup_done(done: bool = True, p: Principal = Admin):
+    with tx() as con:
+        if done:
+            con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES ('setup_done','true')")
+        else:
+            con.execute("DELETE FROM meta WHERE key='setup_done'")
     return {"ok": True}
 
 

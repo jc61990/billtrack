@@ -32,8 +32,7 @@ async function open() {
           } else {
             await api("POST", `/api/plaid/sync?item=${reconnect}`);
           }
-          try { sessionStorage.setItem("bt-admin-tab", "banks"); } catch { /* ignore */ }
-          location.replace("/#admin");
+          location.replace("/#banks");
         } catch (e) { fail(e.message); $("go").disabled = false; }
       },
       onExit: (err) => { if (err) fail(err.display_message || err.error_message || "Plaid closed before finishing."); $("go").disabled = false; },
@@ -45,7 +44,7 @@ async function open() {
 (async () => {
   try {
     const me = await api("GET", "/api/me");
-    if (!me.perms.includes("admin")) return fail("Only an admin can connect banks.");
+    if (!me.perms.includes("finance:write")) return fail("Bank links are for user accounts (admins don't have finances).");
   } catch { location.replace("/"); return; }
   const t = new Date(); $("since").value = new Date(Date.UTC(t.getFullYear(), t.getMonth(), 1)).toISOString().slice(0, 10);
   if (reconnect) { $("ttl").textContent = "Reconnect your bank"; $("form").querySelector("label").hidden = true; $("form").querySelector(".hint").hidden = true; }

@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from . import crypto, ledger, settings
 from .db import rows, tx
+from .scope import owner
 
 log = logging.getLogger("billtrack.plaid")
 HOSTS = {"production": "https://production.plaid.com", "sandbox": "https://sandbox.plaid.com"}
@@ -82,19 +83,20 @@ def exchange(public_token: str, institution_id: str, institution_name: str, user
     item_id, access = r["item_id"], r["access_token"]
     with tx() as con:
         cur = con.execute("""INSERT INTO plaid_items(item_id,access_token_enc,institution_id,institution_name,import_since,
-                             created_at,created_by) VALUES (?,?,?,?,?,?,?)
+                             created_at,created_by,owner_id) VALUES (?,?,?,?,?,?,?,?)
                              ON CONFLICT(item_id) DO UPDATE SET access_token_enc=excluded.access_token_enc,
                              status='ok', error=''""",
                           (item_id, crypto.seal(access, f"plaid:{item_id}"), institution_id[:64], institution_name[:100],
-                           import_since, now(), user_id))
-        local = cur.lastrowid or con.execute("SELECT id FROM plaid_items WHERE item_id=?", (item_id,)).fetchone()["id"]
+                           import_since, now(), user_id, owner()))
+        local = cur.lastrowid or con.execute("SELECT id FROM plaid_items WHERE item_id=? AND owner_id=?",
+                                             (item_id, owner())).fetchone()["id"]
     refresh_accounts(local)
     return local
 
 
 def remove(local_id: int):
     with tx() as con:
-        it = con.execute("SELECT * FROM plaid_items WHERE id=?", (local_id,)).fetchone()
+        it = con.execute("SELECT * FROM plaid_items WHERE id=? AND owner_id=?", (local_id, owner())).fetchone()
     if not it:
         return
     try:
@@ -102,51 +104,56 @@ def remove(local_id: int):
     except PlaidError as e:
         log.warning("Plaid item/remove failed (%s); deleting locally anyway", e.code)
     with tx() as con:
-        con.execute("DELETE FROM plaid_items WHERE id=?", (local_id,))
-        con.execute("UPDATE inv_accounts SET synced_value_cents=NULL WHERE id IN "
-                    "(SELECT map_id FROM plaid_accounts WHERE item_id=? AND map_kind='investment')", (local_id,))
+        con.execute("UPDATE inv_accounts SET synced_value_cents=NULL WHERE owner_id=? AND id IN "
+                    "(SELECT map_id FROM plaid_accounts WHERE item_id=? AND map_kind='investment')", (owner(), local_id))
+        con.execute("DELETE FROM plaid_items WHERE id=? AND owner_id=?", (local_id, owner()))
 
 
 # ---------- sync ----------
 def _set_status(local_id, status, error=""):
     with tx() as con:
-        con.execute("UPDATE plaid_items SET status=?, error=? WHERE id=?", (status, error[:300], local_id))
+        con.execute("UPDATE plaid_items SET status=?, error=? WHERE id=? AND owner_id=?", (status, error[:300], local_id, owner()))
 
 
 def refresh_accounts(local_id: int) -> list:
     with tx() as con:
-        it = con.execute("SELECT * FROM plaid_items WHERE id=?", (local_id,)).fetchone()
+        it = con.execute("SELECT * FROM plaid_items WHERE id=? AND owner_id=?", (local_id, owner())).fetchone()
+    if not it:
+        raise PlaidError("NOT_FOUND", "No such bank link")
     r = call("/accounts/get", {"access_token": _token(it)})
     with tx() as con:
         for a in r["accounts"]:
             b = a.get("balances") or {}
             con.execute("""INSERT INTO plaid_accounts(item_id,account_id,name,official_name,mask,type,subtype,
-                           current_cents,available_cents,limit_cents,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                           current_cents,available_cents,limit_cents,updated_at,owner_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                            ON CONFLICT(account_id) DO UPDATE SET name=excluded.name, official_name=excluded.official_name,
                            mask=excluded.mask, current_cents=excluded.current_cents, available_cents=excluded.available_cents,
                            limit_cents=excluded.limit_cents, updated_at=excluded.updated_at""",
                         (local_id, a["account_id"], (a.get("name") or "")[:100], (a.get("official_name") or "")[:100],
                          (a.get("mask") or "")[-4:], a.get("type") or "", a.get("subtype") or "",
-                         _cents(b.get("current")), _cents(b.get("available")), _cents(b.get("limit")), now()))
+                         _cents(b.get("current")), _cents(b.get("available")), _cents(b.get("limit")), now(), owner()))
         _apply_balances(con, local_id)
-        return rows(con, "SELECT * FROM plaid_accounts WHERE item_id=?", (local_id,))
+        return rows(con, "SELECT * FROM plaid_accounts WHERE item_id=? AND owner_id=?", (local_id, owner()))
 
 
 def _apply_balances(con, local_id):
     """Push Plaid balances into the mapped BillTrack accounts (cards/loans: amount owed; banks: current)."""
-    for pa in rows(con, "SELECT * FROM plaid_accounts WHERE item_id=? AND map_kind IN ('account','investment')", (local_id,)):
+    for pa in rows(con, "SELECT * FROM plaid_accounts WHERE item_id=? AND owner_id=? AND map_kind IN ('account','investment')",
+                   (local_id, owner())):
         if pa["current_cents"] is None:
             continue
         if pa["map_kind"] == "investment":
-            con.execute("UPDATE inv_accounts SET synced_value_cents=? WHERE id=?", (pa["current_cents"], pa["map_id"]))
+            con.execute("UPDATE inv_accounts SET synced_value_cents=? WHERE id=? AND owner_id=?",
+                        (pa["current_cents"], pa["map_id"], owner()))
             continue
-        acct = con.execute("SELECT id, kind FROM accounts WHERE id=?", (pa["map_id"],)).fetchone()
+        acct = con.execute("SELECT id, kind FROM accounts WHERE id=? AND owner_id=?", (pa["map_id"], owner())).fetchone()
         if not acct:
             continue
         upd = {"balance_cents": pa["current_cents"], "balance_updated": now()}
         if acct["kind"] == "credit" and pa["limit_cents"]:
             upd["credit_limit_cents"] = pa["limit_cents"]
-        con.execute(f"UPDATE accounts SET {','.join(f'{k}=?' for k in upd)} WHERE id=?", (*upd.values(), acct["id"]))
+        con.execute(f"UPDATE accounts SET {','.join(f'{k}=?' for k in upd)} WHERE id=? AND owner_id=?",
+                    (*upd.values(), acct["id"], owner()))
         ledger.record_balance(con, acct["id"], pa["current_cents"])
 
 
@@ -201,39 +208,39 @@ def _apply_txn(con, t, pa, since: str) -> str:
         if amt > 0 and detailed not in SKIP_DETAILED and primary not in SKIP_OUT:
             bill = _match_bill(con, acct_id, d, amt)
             if bill:
-                cur = con.execute("""INSERT INTO payments(bill_id,due_date,paid_on,amount_cents,source) VALUES (?,?,?,?,'bank')
+                cur = con.execute("""INSERT INTO payments(bill_id,due_date,paid_on,amount_cents,source,owner_id) VALUES (?,?,?,?,'bank',?)
                                      ON CONFLICT(bill_id,due_date) DO NOTHING""",
-                                  (bill["bill_id"], bill["orig_date"], d.isoformat(), amt))
+                                  (bill["bill_id"], bill["orig_date"], d.isoformat(), amt, owner()))
                 pay_id, out = cur.lastrowid if cur.rowcount else None, f"bill:{bill['name']}"
             else:
-                cur = con.execute("INSERT INTO expenses(date,name,amount_cents,account_id,category,source) VALUES (?,?,?,?,?,'bank')",
-                                  (d.isoformat(), name, amt, acct_id, _pretty(primary)))
+                cur = con.execute("INSERT INTO expenses(date,name,amount_cents,account_id,category,source,owner_id) "
+                                  "VALUES (?,?,?,?,?,'bank',?)", (d.isoformat(), name, amt, acct_id, _pretty(primary), owner()))
                 exp_id, out = cur.lastrowid, "expense"
         elif amt < 0 and primary == "INCOME":
             p = _match_pay(con, acct_id, d, -amt)
             if p:
-                cur = con.execute("""INSERT INTO income_received(source_id,pay_date,amount_cents,source) VALUES (?,?,?,'bank')
-                                     ON CONFLICT(source_id,pay_date) DO NOTHING""", (p["source_id"], p["orig_date"], -amt))
+                cur = con.execute("""INSERT INTO income_received(source_id,pay_date,amount_cents,source,owner_id) VALUES (?,?,?,'bank',?)
+                                     ON CONFLICT(source_id,pay_date) DO NOTHING""", (p["source_id"], p["orig_date"], -amt, owner()))
                 rec_id, out = cur.lastrowid if cur.rowcount else None, f"pay:{p['name']}"
         elif primary in SKIP_OUT or detailed in SKIP_DETAILED:
             out = "transfer"
     con.execute("""INSERT INTO plaid_txns(transaction_id,plaid_account_id,date,name,amount_cents,category,outcome,
-                   expense_id,payment_id,received_id,seen_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                (tid, pa["id"], d.isoformat(), name, amt, primary, out, exp_id, pay_id, rec_id, now()))
+                   expense_id,payment_id,received_id,seen_at,owner_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (tid, pa["id"], d.isoformat(), name, amt, primary, out, exp_id, pay_id, rec_id, now(), owner()))
     return out
 
 
 def _undo_txn(con, tid):
-    r = con.execute("SELECT * FROM plaid_txns WHERE transaction_id=?", (tid,)).fetchone()
+    r = con.execute("SELECT * FROM plaid_txns WHERE transaction_id=? AND owner_id=?", (tid, owner())).fetchone()
     if not r:
         return
     if r["expense_id"]:
-        con.execute("DELETE FROM expenses WHERE id=? AND source='bank'", (r["expense_id"],))
+        con.execute("DELETE FROM expenses WHERE id=? AND source='bank' AND owner_id=?", (r["expense_id"], owner()))
     if r["payment_id"]:
-        con.execute("DELETE FROM payments WHERE id=? AND source='bank'", (r["payment_id"],))
+        con.execute("DELETE FROM payments WHERE id=? AND source='bank' AND owner_id=?", (r["payment_id"], owner()))
     if r["received_id"]:
-        con.execute("DELETE FROM income_received WHERE id=? AND source='bank'", (r["received_id"],))
-    con.execute("DELETE FROM plaid_txns WHERE transaction_id=?", (tid,))
+        con.execute("DELETE FROM income_received WHERE id=? AND source='bank' AND owner_id=?", (r["received_id"], owner()))
+    con.execute("DELETE FROM plaid_txns WHERE transaction_id=? AND owner_id=?", (tid, owner()))
 
 
 def sync_item(local_id: int) -> dict:
@@ -241,7 +248,7 @@ def sync_item(local_id: int) -> dict:
     try:
         refresh_accounts(local_id)
         with tx() as con:
-            it = con.execute("SELECT * FROM plaid_items WHERE id=?", (local_id,)).fetchone()
+            it = con.execute("SELECT * FROM plaid_items WHERE id=? AND owner_id=?", (local_id, owner())).fetchone()
         cursor, token = it["cursor"], _token(it)
         added, modified, removed = [], [], []
         for _attempt in range(3):            # Plaid asks to restart pagination if data changes mid-way
@@ -258,7 +265,8 @@ def sync_item(local_id: int) -> dict:
                 if e.code != "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION":
                     raise
         with tx() as con:
-            accts = {a["account_id"]: a for a in rows(con, "SELECT * FROM plaid_accounts WHERE item_id=?", (local_id,))}
+            accts = {a["account_id"]: a for a in rows(con, "SELECT * FROM plaid_accounts WHERE item_id=? AND owner_id=?",
+                                                      (local_id, owner()))}
             for t in removed:
                 _undo_txn(con, t["transaction_id"]); stats["removed"] += 1
             for t in modified:
@@ -275,7 +283,8 @@ def sync_item(local_id: int) -> dict:
                 stats["bills_paid"] += o.startswith("bill:")
                 stats["pay_received"] += o.startswith("pay:")
                 stats["expenses"] += o == "expense"
-            con.execute("UPDATE plaid_items SET cursor=?, last_sync=?, status='ok', error='' WHERE id=?", (c, now(), local_id))
+            con.execute("UPDATE plaid_items SET cursor=?, last_sync=?, status='ok', error='' WHERE id=? AND owner_id=?",
+                        (c, now(), local_id, owner()))
             ledger.snapshot_networth(con)
             from . import notify
             notify.account_alerts(con)
@@ -286,21 +295,32 @@ def sync_item(local_id: int) -> dict:
     return stats
 
 
-def sync_all(only_due: bool = False) -> dict:
+def sync_all(only_due: bool = False, only_owner: int | None = None) -> dict:
+    """Scheduler / manual: every user's links, each synced inside that user's own scope."""
     out = {}
     if not configured():
         return out
+    from . import scope
     with tx() as con:
-        items = rows(con, "SELECT id, last_sync, status, institution_name FROM plaid_items")
+        items = rows(con, "SELECT p.id, p.last_sync, p.status, p.institution_name, p.owner_id, u.prefs FROM plaid_items p "
+                          "JOIN users u ON u.id=p.owner_id WHERE u.disabled=0 AND u.role='user'")
     for it in items:
+        if only_owner and it["owner_id"] != only_owner:
+            continue
         if only_due and it["last_sync"]:
             age = datetime.now(timezone.utc) - datetime.fromisoformat(it["last_sync"])
             if age < timedelta(hours=settings.get("plaid_sync_hours")) or it["status"] == "login_required":
                 continue
-        out[it["id"]] = sync_item(it["id"])
-        if out[it["id"]].get("error") and it["status"] != "login_required":
-            with tx() as con:
-                from . import notify
-                notify.notify_perm(con, "admin", f"Bank sync problem: {it['institution_name']}",
-                                   "Open Admin > Bank links. If it says to reconnect, sign in to the bank again there.", "warn")
+        try:
+            ws = json.loads(it["prefs"] or "{}").get("week_start")
+        except ValueError:
+            ws = None
+        with scope.as_user(it["owner_id"], ws if isinstance(ws, int) else None):
+            out[it["id"]] = sync_item(it["id"])
+            if out[it["id"]].get("error") and it["status"] != "login_required":
+                with tx() as con:
+                    from . import notify
+                    u = con.execute("SELECT * FROM users WHERE id=?", (it["owner_id"],)).fetchone()
+                    notify.deliver(con, u, f"Bank sync problem: {it['institution_name']}",
+                                   "Open Bank links. If it says to reconnect, sign in to your bank again there.", "warn")
     return out

@@ -1,6 +1,6 @@
 """BillTrack admin CLI
 
-  python -m app.manage adduser <name> [role] create login (role: admin|member|viewer, default admin if first user)
+  python -m app.manage adduser <name> [role] create login (role: admin|user; the first account is an admin)
   python -m app.manage passwd <name>        change password (signs out that user)
   python -m app.manage reset-2fa <name>     turn off two-factor for a locked-out user
   python -m app.manage unlock <name>        clear a login lockout
@@ -54,9 +54,9 @@ def main():
                 if con.execute("SELECT 1 FROM users WHERE username=? COLLATE NOCASE", (a[1],)).fetchone():
                     sys.exit("User exists. Use passwd to change the password.")
                 first = not con.execute("SELECT 1 FROM users").fetchone()
-            role = a[2] if len(a) == 3 else ("admin" if first else "member")
+            role = a[2] if len(a) == 3 else ("admin" if first else "user")
             if role not in security.ROLE_PERMS:
-                sys.exit("Role must be admin, member or viewer")
+                sys.exit("Role must be admin or user")
             h = security.hash_pw(_pw("Password (12+ chars): "))
             n = security.iso(security.now_utc())
             with db.tx() as con:

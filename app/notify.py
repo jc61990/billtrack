@@ -15,6 +15,7 @@ from urllib.parse import quote, urlparse
 from . import ledger, settings
 from .db import rows, tx
 from .recurrence import occurrences
+from . import scope
 from .security import effective_perms, iso, now_utc
 
 log = logging.getLogger("billtrack.notify")
@@ -78,7 +79,7 @@ def send_push(topic: str, title: str, body: str, priority="default") -> bool:
 def prefs(user) -> dict:
     p = {"email_alerts": True, "push_alerts": False, "ntfy_topic": "", "digest": True,
          "bill_reminders": True, "due_alerts": True, "overdue_alerts": True, "tracker_alerts": True,
-         "balance_alerts": True, "timezone": "", "tz_auto": True}
+         "balance_alerts": True, "timezone": "", "tz_auto": True, "week_start": None}
     try:
         p.update(json.loads(user["prefs"] or "{}"))
     except ValueError:
@@ -183,17 +184,18 @@ def _user_clock(u):
 def check_once() -> None:
     with tx() as con:
         users = [u for u in rows(con, "SELECT * FROM users WHERE disabled=0")]
-        sys_today = datetime.now(settings.system_tz()).date()
-        # wide enough to cover every user's "today" (zones differ by up to ~1 day)
-        occ = ledger.bill_occurrences(con, sys_today - timedelta(days=2), sys_today + timedelta(days=32))
         reminders = rows(con, "SELECT * FROM reminders WHERE active=1")
 
         for u in users:
             now, t, zone = _user_clock(u)
             tok = settings.use_tz(zone)          # anything computed for this user uses their zone
+            ws = prefs(u).get("week_start")
+            own = scope.set_owner(u["id"] if u["role"] == "user" and u["status"] == "active" else None,
+                                  ws if isinstance(ws, int) else None)
             try:
-                # Bill alerts, batched into one message
-                if "finance:read" in effective_perms(u):
+                # Bill alerts, batched into one message (users only: admins have no finance data)
+                if "finance:read" in effective_perms(u) and u["status"] == "active":
+                    occ = ledger.bill_occurrences(con, t - timedelta(days=1), t + timedelta(days=31))
                     pr, lines, refs, urgent = prefs(u), [], [], False
                     for o in occ:
                         if o["status"] in ("paid", "skipped"):
@@ -236,13 +238,14 @@ def check_once() -> None:
                         con.execute("UPDATE reminders SET next_at=? WHERE id=?", (nxt, r["id"]))
                     else:
                         con.execute("UPDATE reminders SET active=0 WHERE id=?", (r["id"],))
+                if "finance:read" in effective_perms(u) and u["status"] == "active":
+                    account_alerts(con, u)
+                    ledger.snapshot_investments(con)
+                    ledger.snapshot_accounts(con)
+                    ledger.snapshot_networth(con)
             finally:
+                scope.reset(own)
                 settings.reset_tz(tok)
-
-        account_alerts(con)
-        ledger.snapshot_investments(con)
-        ledger.snapshot_accounts(con)
-        ledger.snapshot_networth(con)
 
         # Housekeeping
         n = now_utc()
@@ -253,9 +256,11 @@ def check_once() -> None:
         con.execute("DELETE FROM reset_tokens WHERE expires_at < ?", (iso(n),))
 
 
-def account_alerts(con) -> int:
-    """Low balance, projected low balance this week, card utilization over threshold, card payment due soon.
-    Each fires once; a condition that clears re-arms its alert. Returns alerts delivered."""
+def account_alerts(con, user=None) -> int:
+    """For the user in scope: low balance, projected low balance this week, card utilization over threshold,
+    card payment due soon. Each fires once; a condition that clears re-arms its alert."""
+    if user is None:
+        user = con.execute("SELECT * FROM users WHERE id=?", (scope.owner(),)).fetchone()
     v = ledger.accounts_view(con)
     conds = []   # (ref, kind, active, level, line)
     for a in v["banks"]:
@@ -280,16 +285,15 @@ def account_alerts(con) -> int:
         if not active:
             con.execute("DELETE FROM alert_log WHERE ref=? AND kind=?", (ref, kind))  # re-arm
     sent = 0
-    for u in rows(con, "SELECT * FROM users WHERE disabled=0"):
-        if "finance:read" not in effective_perms(u) or not prefs(u)["balance_alerts"]:
-            continue
+    u = user
+    if u and prefs(u)["balance_alerts"]:
         due = [(ref, kind, line) for ref, kind, active, _, line in conds if active and not _already(con, u["id"], ref, kind)]
         if due:
             deliver(con, u, "Account alert" if len(due) == 1 else f"{len(due)} account alerts",
                     "\n".join(x[2] for x in due), "warn")
             for ref, kind, _ in due:
                 _mark(con, u["id"], ref, kind)
-            sent += 1
+            sent = 1
     return sent
 
 

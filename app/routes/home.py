@@ -12,7 +12,7 @@ r = APIRouter(prefix="/api", tags=["home"])
 
 
 @r.get("/home")
-def home(p: Principal = Depends(require("self"))):
+def home(p: Principal = Depends(require("finance:read"))):
     t = ledger.today()
     out: dict = {"today": t.isoformat(), "sections": []}
     with tx() as con:

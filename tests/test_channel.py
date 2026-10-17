@@ -59,7 +59,7 @@ def test_plaintext_api_blocked_for_browsers():
 
 
 def test_channel_login_and_data_are_opaque():
-    mkuser("jc", "admin", "jc@example.com")
+    mkuser("jc", "user", "jc@example.com")
     c = Client()
     s, out = c.call("POST", "/api/login", {"username": "jc", "password": PW})
     assert s == 200 and out["ok"]
@@ -76,7 +76,7 @@ def test_channel_login_and_data_are_opaque():
 
 
 def test_replay_tamper_and_unknown_channel_rejected():
-    mkuser("jc", "admin")
+    mkuser("jc", "user")
     c = Client()
     c.call("POST", "/api/login", {"username": "jc", "password": PW})
     env = c.envelope("GET", "/api/me")
@@ -90,7 +90,7 @@ def test_replay_tamper_and_unknown_channel_rejected():
 
 
 def test_channel_bound_to_session():
-    mkuser("jc", "admin")
+    mkuser("jc", "user")
     c = Client()
     c.call("POST", "/api/login", {"username": "jc", "password": PW})
     c.http.cookies.set("bt_session", "someone-elses-cookie")
@@ -98,7 +98,7 @@ def test_channel_bound_to_session():
 
 
 def test_bearer_scripts_still_work():
-    mkuser("jc", "admin")
+    mkuser("jc", "user")
     c = Client()
     c.call("POST", "/api/login", {"username": "jc", "password": PW})
     s, t = c.call("POST", "/api/me/tokens", {"name": "cron", "scope": "read"})
@@ -114,7 +114,7 @@ def test_index_source_differs_every_load():
 
 
 def test_out_of_order_requests_accepted_repeats_refused():
-    mkuser("jc", "admin")
+    mkuser("jc", "user")
     c = Client()
     c.call("POST", "/api/login", {"username": "jc", "password": PW})
     e5 = c.envelope("GET", "/api/me", seq=105)

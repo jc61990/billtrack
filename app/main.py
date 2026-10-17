@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 import secrets
 
-from . import __version__, channel, config, crypto, db, ledger, notify, settings
+from . import __version__, channel, config, crypto, db, ledger, notify, scope, settings
 from .routes import admin, auth, finance, home, me, plaid as plaid_routes, trackers
 from . import security
 from .security import Principal, Throttle, client_ip, require
@@ -100,14 +100,15 @@ async def guard(request: Request, call_next):
                                   request.headers.get("x-forwarded-host")):
                 return JSONResponse({"detail": "Origin not allowed"}, 403)
     # work out dates in the signed-in user's own time zone (falls back to the system default)
-    tzname = ""
-    if path.startswith("/api/") and not db.locked():
-        tzname = await asyncio.to_thread(security.tz_for_request, request.headers)
-    tz_token = settings.use_tz(tzname)
+    tzname, owner, week = "", None, None
+    if path.startswith(("/api/", "/cal/")) and not db.locked():
+        tzname, owner, week = await asyncio.to_thread(security.context_for_request, request.headers)
+    tz_token, own_tokens = settings.use_tz(tzname), scope.set_owner(owner, week)
     try:
         resp = await call_next(request)
     finally:
         settings.reset_tz(tz_token)
+        scope.reset(own_tokens)
     h = resp.headers
     if "content-security-policy" not in h:
         h["Content-Security-Policy"] = CSP
@@ -123,6 +124,11 @@ async def guard(request: Request, call_next):
     if path.startswith("/api/"):
         h["Cache-Control"] = "no-store"
     return resp
+
+
+@api.exception_handler(scope.NoOwner)
+async def no_owner(_req, exc):
+    return JSONResponse({"detail": "Finance pages are for user accounts. Admin accounts only manage the system."}, 403)
 
 
 @api.exception_handler(db.KeyError_)
@@ -152,12 +158,25 @@ def _ics_text(s: str) -> str:
 
 @api.get("/cal/{token}.ics", include_in_schema=False)
 def ics(token: str):
-    if not config.ICS_TOKEN or len(token) > 200 or not crypto.eq(token, config.ICS_TOKEN):
+    """Per-user private feed. The token is looked up by its hash; unknown tokens get a plain 404."""
+    if len(token) > 200:
         raise HTTPException(404)
-    t = ledger.today()
     with db.tx() as con:
-        bills = ledger.bill_occurrences(con, t - timedelta(days=60), t + timedelta(days=365))
-        pays = ledger.pay_occurrences(con, t - timedelta(days=60), t + timedelta(days=365))
+        u = con.execute("SELECT id, role, status, disabled, prefs FROM users WHERE ics_token_hash=?",
+                        (crypto.token_hash(token),)).fetchone()
+    if not u or u["role"] != "user" or u["status"] != "active" or u["disabled"]:
+        raise HTTPException(404)
+    import json as _json
+    pr = _json.loads(u["prefs"] or "{}")
+    tzt = settings.use_tz(settings.user_tz_name(pr))
+    try:
+        with scope.as_user(u["id"], pr.get("week_start") if isinstance(pr.get("week_start"), int) else None):
+            t = ledger.today()
+            with db.tx() as con:
+                bills = ledger.bill_occurrences(con, t - timedelta(days=60), t + timedelta(days=365))
+                pays = ledger.pay_occurrences(con, t - timedelta(days=60), t + timedelta(days=365))
+    finally:
+        settings.reset_tz(tzt)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//BillTrack//EN", "X-WR-CALNAME:Bills", "CALSCALE:GREGORIAN"]
     for b in bills:

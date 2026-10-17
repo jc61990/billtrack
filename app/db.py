@@ -106,9 +106,9 @@ CREATE TABLE IF NOT EXISTS networth_items (
   value_cents INTEGER NOT NULL DEFAULT 0, value_updated TEXT, notes TEXT NOT NULL DEFAULT '',
   active INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS networth_snapshots (
-  date TEXT PRIMARY KEY, cash_cents INTEGER NOT NULL, investments_cents INTEGER NOT NULL,
+  owner_id INTEGER NOT NULL, date TEXT NOT NULL, cash_cents INTEGER NOT NULL, investments_cents INTEGER NOT NULL,
   other_assets_cents INTEGER NOT NULL, cards_cents INTEGER NOT NULL, loans_cents INTEGER NOT NULL,
-  other_liabilities_cents INTEGER NOT NULL);
+  other_liabilities_cents INTEGER NOT NULL, PRIMARY KEY (owner_id, date));
 CREATE TABLE IF NOT EXISTS plaid_items (
   id INTEGER PRIMARY KEY, item_id TEXT UNIQUE NOT NULL, access_token_enc TEXT NOT NULL,
   institution_id TEXT NOT NULL DEFAULT '', institution_name TEXT NOT NULL DEFAULT '', cursor TEXT NOT NULL DEFAULT '',
@@ -125,6 +125,13 @@ CREATE TABLE IF NOT EXISTS plaid_txns (
   date TEXT NOT NULL, name TEXT NOT NULL, amount_cents INTEGER NOT NULL, category TEXT NOT NULL DEFAULT '',
   outcome TEXT NOT NULL DEFAULT '', expense_id INTEGER, payment_id INTEGER, received_id INTEGER, seen_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS invite_codes (
+  id INTEGER PRIMARY KEY, code_hash TEXT UNIQUE NOT NULL, code_enc TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+  created_by INTEGER, created_at TEXT NOT NULL, expires_at TEXT, max_uses INTEGER NOT NULL DEFAULT 1,
+  uses INTEGER NOT NULL DEFAULT 0, revoked INTEGER NOT NULL DEFAULT 0, emailed_to TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS invite_code_uses (
+  id INTEGER PRIMARY KEY, code_id INTEGER NOT NULL REFERENCES invite_codes(id) ON DELETE CASCADE,
+  user_id INTEGER, username TEXT NOT NULL, email TEXT NOT NULL, used_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_extra_date ON income_extra(date);
 CREATE INDEX IF NOT EXISTS ix_exp_date ON expenses(date);
 CREATE INDEX IF NOT EXISTS ix_audit_ts ON audit_log(ts);
@@ -169,7 +176,19 @@ ADD_COLUMNS = [
     ("income_received", "source", "TEXT NOT NULL DEFAULT 'manual'"),
     ("expenses", "source", "TEXT NOT NULL DEFAULT 'manual'"),
     ("inv_accounts", "synced_value_cents", "INTEGER"),
-]
+    # v3.0 private data per user + registration
+    ("users", "status", "TEXT NOT NULL DEFAULT 'active'"),
+    ("users", "registered_at", "TEXT"),
+    ("users", "approved_by", "INTEGER"),
+    ("users", "ics_token_hash", "TEXT"),
+] + [(t, "owner_id", "INTEGER") for t in (
+    "accounts", "bills", "payments", "income_sources", "income_received", "income_extra", "expenses",
+    "occurrence_overrides", "trackers", "tracker_entries", "inv_accounts", "holdings", "inv_snapshots",
+    "account_history", "networth_items", "plaid_items", "plaid_accounts", "plaid_txns")]
+
+OWNED = ("accounts", "bills", "payments", "income_sources", "income_received", "income_extra", "expenses",
+         "occurrence_overrides", "trackers", "tracker_entries", "inv_accounts", "holdings", "inv_snapshots",
+         "account_history", "networth_items", "plaid_items", "plaid_accounts", "plaid_txns")
 SCHEMA_VERSION = 2
 
 
@@ -187,10 +206,44 @@ def migrate(con) -> None:
     for t in ("bills", "income_sources"):
         con.execute(f"UPDATE {t} SET end_date=NULL WHERE end_date IS NOT NULL AND end_date <= start_date "
                     "AND recurrence <> 'once'")
-    # Make sure an admin exists (the original v1 user becomes admin)
-    if not con.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
-        con.execute("UPDATE users SET role='admin' WHERE id=(SELECT min(id) FROM users)")
+    # v1: make sure an admin exists (the original user becomes admin)
+    if not con.execute("SELECT 1 FROM users WHERE role IN ('admin','user')").fetchone() and \
+            con.execute("SELECT 1 FROM users").fetchone() and not con.execute("SELECT 1 FROM meta WHERE key='v3'").fetchone():
+        if not con.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
+            con.execute("UPDATE users SET role='admin' WHERE id=(SELECT min(id) FROM users)")
+    _migrate_v3(con)
     con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def _migrate_v3(con):
+    """3.0: admins administer, users own private finance data.
+    Existing shared data goes to the oldest admin, who becomes a regular user (setup then asks for a new admin).
+    member/viewer accounts become users with their own (empty) data."""
+    if con.execute("SELECT 1 FROM meta WHERE key='v3'").fetchone():
+        return
+    for t in OWNED:
+        con.execute(f"CREATE INDEX IF NOT EXISTS ix_{t}_owner ON {t}(owner_id)")
+    has_data = any(con.execute(f"SELECT 1 FROM {t} WHERE owner_id IS NULL LIMIT 1").fetchone() for t in OWNED)
+    keeper = con.execute("SELECT id FROM users WHERE role='admin' ORDER BY id LIMIT 1").fetchone()
+    if has_data and keeper:
+        for t in OWNED:
+            con.execute(f"UPDATE {t} SET owner_id=? WHERE owner_id IS NULL", (keeper["id"],))
+        con.execute("UPDATE users SET role='user' WHERE id=?", (keeper["id"],))
+        con.execute("UPDATE reminders SET user_id=user_id")
+    con.execute("UPDATE users SET role='user' WHERE role IN ('member','viewer')")
+    # net worth history becomes per user
+    cols = {r[1] for r in con.execute("PRAGMA table_info(networth_snapshots)")}
+    if "owner_id" not in cols:
+        con.execute("ALTER TABLE networth_snapshots RENAME TO networth_snapshots_v2")
+        con.execute("""CREATE TABLE networth_snapshots (owner_id INTEGER NOT NULL, date TEXT NOT NULL,
+            cash_cents INTEGER NOT NULL, investments_cents INTEGER NOT NULL, other_assets_cents INTEGER NOT NULL,
+            cards_cents INTEGER NOT NULL, loans_cents INTEGER NOT NULL, other_liabilities_cents INTEGER NOT NULL,
+            PRIMARY KEY (owner_id, date))""")
+        if keeper:
+            con.execute("""INSERT INTO networth_snapshots SELECT ?, date, cash_cents, investments_cents, other_assets_cents,
+                           cards_cents, loans_cents, other_liabilities_cents FROM networth_snapshots_v2""", (keeper["id"],))
+        con.execute("DROP TABLE networth_snapshots_v2")
+    con.execute("INSERT INTO meta(key,value) VALUES ('v3', ?)", (str(keeper["id"]) if (has_data and keeper) else '""',))
 
 
 class KeyError_(RuntimeError):

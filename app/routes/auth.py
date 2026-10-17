@@ -58,8 +58,13 @@ def login(body: Login, request: Request, response: Response):
             audit(con, request, "login failed", body.username[:64], user_id=u["id"] if u else None,
                   username=u["username"] if u else "")
             failed = True  # committed below before raising (raising inside tx would roll back the lockout)
+        elif u["status"] != "active":
+            failed = False
+            pending_msg = ("Your account is waiting for an admin to approve it. You'll get an email when it's ready."
+                           if u["status"] == "pending" else "This account wasn't approved.")
         else:
             failed = False
+            pending_msg = None
             if ph_needs_rehash(u["pw_hash"]):
                 con.execute("UPDATE users SET pw_hash=? WHERE id=?", (hash_pw(body.password), u["id"]))
             if u["totp_enabled"]:
@@ -68,6 +73,8 @@ def login(body: Login, request: Request, response: Response):
     if failed:
         # Same message for every failure type: no username enumeration
         raise HTTPException(401, "Wrong username or password, or the account is locked")
+    if pending_msg:   # only said after the right password, so it reveals nothing to strangers
+        raise HTTPException(403, pending_msg)
     return {"ok": True}
 
 
@@ -178,44 +185,78 @@ def reset(body: ResetIn, request: Request):
     return {"ok": True}
 
 
-# ---------- invites ----------
-@r.get("/invite/info")
-def invite_info(token: Annotated[str, StringConstraints(max_length=256)]):
-    with tx() as con:
-        i = con.execute("SELECT email, role, expires_at, used_at FROM invites WHERE token_hash=?",
-                        (crypto.token_hash(token),)).fetchone()
-    if not i or i["used_at"] or i["expires_at"] < iso(now_utc()):
-        raise HTTPException(400, "This invite is invalid or has expired")
-    return {"email": i["email"], "role": i["role"]}
+# ---------- registration + invite codes ----------
+from ..security import Throttle  # noqa: E402
+
+register_ip = Throttle(5, 3600)
 
 
-class AcceptIn(BaseModel):
-    token: Str256
+def normalize_code(code: str) -> str:
+    return "".join(ch for ch in code.upper() if ch.isalnum()).removeprefix("BT")
+
+
+def find_code(con, code: str):
+    if not code:
+        return None
+    c = con.execute("SELECT * FROM invite_codes WHERE code_hash=?", (crypto.token_hash(normalize_code(code)),)).fetchone()
+    if not c or c["revoked"] or c["uses"] >= c["max_uses"] or (c["expires_at"] and c["expires_at"] < iso(now_utc())):
+        return None
+    return c
+
+
+@r.get("/register/info")
+def register_info():
+    return {"mode": settings.get("registration_mode")}
+
+
+class RegisterIn(BaseModel):
     username: Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=32,
                                                pattern=r"^[A-Za-z0-9_.\-]+$")]
     display_name: Annotated[str, StringConstraints(strip_whitespace=True, max_length=60)] = ""
+    email: Annotated[str, StringConstraints(strip_whitespace=True, max_length=254)]
     password: Str256
+    invite_code: Annotated[str, StringConstraints(strip_whitespace=True, max_length=40)] = ""
 
 
-@r.post("/invite/accept")
-def invite_accept(body: AcceptIn, request: Request, response: Response):
-    h = crypto.token_hash(body.token)
+@r.post("/register")
+def register(body: RegisterIn, request: Request, response: Response):
+    mode = settings.get("registration_mode")
+    if mode == "closed":
+        raise HTTPException(403, "Sign-ups are closed. Ask an admin for an account.")
+    if register_ip.hit(client_ip(request)):
+        raise HTTPException(429, "Too many sign-ups from here. Try again later.")
+    if not notify.valid_email(body.email):
+        raise HTTPException(422, "Enter a valid email address")
+    try:
+        pw = hash_pw(body.password)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+    name = "".join(c for c in body.display_name if c.isprintable())
     with tx() as con:
-        i = con.execute("SELECT * FROM invites WHERE token_hash=?", (h,)).fetchone()
-        if not i or i["used_at"] or i["expires_at"] < iso(now_utc()):
-            raise HTTPException(400, "This invite is invalid or has expired")
+        code = find_code(con, body.invite_code) if body.invite_code else None
+        if body.invite_code and not code:
+            raise HTTPException(400, "That invite code isn't valid (used up, expired or mistyped)")
+        if mode == "invite_only" and not code:
+            raise HTTPException(403, "You need an invite code to sign up")
         if con.execute("SELECT 1 FROM users WHERE username=? COLLATE NOCASE", (body.username,)).fetchone():
             raise HTTPException(409, "That username is taken")
-        try:
-            pw = hash_pw(body.password)
-        except ValueError as e:
-            raise HTTPException(422, str(e)) from None
+        if con.execute("SELECT 1 FROM users WHERE email=? COLLATE NOCASE", (body.email,)).fetchone():
+            raise HTTPException(409, "That email already has an account. Try signing in or resetting the password.")
         n = iso(now_utc())
-        cur = con.execute("INSERT INTO users(username,pw_hash,role,email,display_name,created_at,pw_changed_at) "
-                          "VALUES (?,?,?,?,?,?,?)",
-                          (body.username, pw, i["role"], i["email"], "".join(c for c in body.display_name if c.isprintable()), n, n))
-        con.execute("UPDATE invites SET used_at=? WHERE id=?", (n, i["id"]))
-        u = con.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
-        audit(con, request, "invite accepted", body.username, user_id=u["id"], username=u["username"])
-        _finish(con, request, response, u)
-    return {"ok": True}
+        status = "active" if code else "pending"
+        uid = con.execute("INSERT INTO users(username,pw_hash,role,email,display_name,created_at,pw_changed_at,status,registered_at) "
+                          "VALUES (?,?,'user',?,?,?,?,?,?)", (body.username, pw, body.email, name, n, n, status, n)).lastrowid
+        if code:
+            con.execute("UPDATE invite_codes SET uses=uses+1 WHERE id=?", (code["id"],))
+            con.execute("INSERT INTO invite_code_uses(code_id,user_id,username,email,used_at) VALUES (?,?,?,?,?)",
+                        (code["id"], uid, body.username, body.email, n))
+            audit(con, request, "registered with invite code", body.username, f"code #{code['id']}", user_id=uid, username=body.username)
+            u = con.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+            _finish(con, request, response, u)
+        else:
+            audit(con, request, "registration pending", body.username, body.email, user_id=uid, username=body.username)
+            for a in con.execute("SELECT * FROM users WHERE role='admin' AND disabled=0").fetchall():
+                notify.deliver(con, a, f"New sign-up waiting: {body.username}",
+                               f"{name or body.username} <{body.email}> asked for an account.\n"
+                               "Approve or reject it in Admin > Users.", "warn")
+    return {"status": status}

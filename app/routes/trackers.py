@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import Field
 
 from .. import db, ledger, notify
+from ..scope import owner
 from ..security import Principal, audit, iso, now_utc, require
 from .common import Cents, Color, In, Name, Note, SCents, Short, crud
 
@@ -42,9 +43,10 @@ def _milestone(con, row):
     prev = t["progress"] - row["amount_cents"] / base
     for m in (1.0, 0.75, 0.5, 0.25):
         if prev < m <= t["progress"]:
-            notify.notify_perm(con, "trackers:read", f"{t['name']}: {int(m * 100)}% reached",
-                               f"{t['name']} is at {notify.money(t['current_cents'])}"
-                               f" ({round(t['progress'] * 100)}%).", pref="tracker_alerts")
+            u = con.execute("SELECT * FROM users WHERE id=?", (owner(),)).fetchone()
+            if u and notify.prefs(u).get("tracker_alerts", True):
+                notify.deliver(con, u, f"{t['name']}: {int(m * 100)}% reached",
+                               f"{t['name']} is at {notify.money(t['current_cents'])} ({round(t['progress'] * 100)}%).")
             break
 
 
@@ -62,7 +64,8 @@ def trackers(archived: bool = False, p: Principal = Depends(require("trackers:re
 @r.get("/trackers/{tid}/entries")
 def tracker_entries(tid: int, p: Principal = Depends(require("trackers:read"))):
     with db.tx() as con:
-        return db.rows(con, "SELECT * FROM tracker_entries WHERE tracker_id=? ORDER BY date DESC LIMIT 1000", (tid,))
+        return db.rows(con, "SELECT * FROM tracker_entries WHERE tracker_id=? AND owner_id=? ORDER BY date DESC LIMIT 1000",
+                       (tid, owner()))
 
 
 # ---------- investments ----------
@@ -122,8 +125,8 @@ def update_prices(body: PricesIn, request: Request, p: Principal = Depends(requi
     n = 0
     with db.tx() as con:
         for x in body.prices:
-            n += con.execute("UPDATE holdings SET price_cents=?, price_updated=? WHERE upper(symbol)=?",
-                             (x.price_cents, iso(now_utc()), x.symbol.upper().strip())).rowcount
+            n += con.execute("UPDATE holdings SET price_cents=?, price_updated=? WHERE upper(symbol)=? AND owner_id=?",
+                             (x.price_cents, iso(now_utc()), x.symbol.upper().strip(), owner())).rowcount
         ledger.snapshot_investments(con)
         ledger.snapshot_networth(con)
         audit(con, request, "update prices", f"{len(body.prices)} symbols", f"{n} holdings")
