@@ -329,8 +329,7 @@ systemctl daemon-reload
 systemctl enable --now billtrack
 systemctl restart billtrack
 
-USERS=$(sudo -u "$SVC_USER" env BT_DB_PATH="$DB_FILE" BT_DB_KEY_FILE="$KEY_FILE" "$APP_DIR/.venv/bin/python" -c \
-  "import sys;sys.path.insert(0,'$APP_DIR/src');from app import db;db.init();c=db.connect();print(c.execute('select count(*) from users').fetchone()[0])")
+USERS=$(manage_py "from app import db;db.init();c=db.connect();print(c.execute('select count(*) from users').fetchone()[0])")
 if [[ "$USERS" == "0" ]]; then
   echo
   echo "==> First-time settings (all changeable later in Admin > Settings)"
@@ -495,8 +494,7 @@ NGINX
   MAIN_IP="${IPS[0]:-127.0.0.1}"
   URL="https://$MAIN_IP"
   # Fill in Admin > Settings > Public URL on first install so email links work
-  sudo -u "$SVC_USER" env BT_DB_PATH="$DB_FILE" BT_DB_KEY_FILE="$KEY_FILE" PYTHONPATH="$APP_DIR/src" \
-    "$APP_DIR/.venv/bin/python" -c "from app import settings
+  manage_py "from app import settings
 if not settings.get('base_url'):
     settings.update({'base_url': '$URL'}); print('    Public URL set to $URL (change in Admin > Settings)')"
 

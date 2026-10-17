@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.9.1 - 2026-10-17
+### Fixed
+- `setup.sh` stopped after a successful passphrase migration with "Wrong database key": the user-count check and
+  the Public-URL step still opened the database with the key file alone (pre-2.9 environment), which correctly
+  fails once the passphrase is in place. Both now use the same environment as every other step. Data was never at
+  risk: the migration had completed and the service itself started with the right settings.
+- Regression test: every database access in `setup.sh` must carry the keyring/runtime-key environment.
+
 ## 2.9.0 - 2026-10-16
 ### Security
 - **Passphrase-protected database.** A random 256-bit data key encrypts the database (SQLCipher) and derives the

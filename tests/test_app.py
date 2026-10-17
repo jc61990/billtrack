@@ -507,3 +507,12 @@ def test_connect_page_csp_scoped():
     assert "cdn.plaid.com" in connect and "'unsafe-inline'" in connect.split("style-src")[1].split(";")[0]
     assert "plaid" not in main and "unsafe-inline" not in main            # main app unchanged
     assert "unsafe" not in connect.split("script-src")[1].split(";")[0]    # scripts still locked down
+
+
+def test_setup_sh_opens_db_only_through_shared_env():
+    """Regression (2.9.0): every database access in setup.sh must carry the keyring/runtime-key env."""
+    import re
+    src = open(os.path.join(os.path.dirname(__file__), "..", "setup.sh")).read()
+    offenders = [ln for ln in src.splitlines() if "BT_DB_KEY_FILE=" in ln
+                 and not re.match(r"\s*(BT_ENV=\(|ENVV=\(|Environment=)", ln)]
+    assert offenders == [], offenders
