@@ -52,19 +52,44 @@ async function signOut(message) {
   location.replace("/");
 }
 
-// Forced sign-out: hard session limit from the server, and real inactivity (the background refresh doesn't count).
-let lastActivity = Date.now(), warned = false;
+// Session limits: hard limit from the server, and real inactivity (the background refresh doesn't count).
+// Two minutes before either one, a bar offers to keep going.
+let lastActivity = Date.now();
 ["pointerdown", "keydown", "wheel", "touchstart"].forEach((ev) => addEventListener(ev, () => { lastActivity = Date.now(); }, { passive: true }));
+const bar = el("div", { class: "session-bar", role: "alert", hidden: true });
+document.body.append(bar);
+const mmss = (ms) => { const t = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
+async function staySignedIn() {
+  try {
+    const r = await api("POST", "/api/me/session/extend");
+    S.me.session_expires_at = r.session_expires_at;
+    lastActivity = Date.now();
+    bar.hidden = true;
+    toast("You're signed in for another " + (S.me.session_minutes || 15) + " minutes");
+  } catch (e) { toast(e.message, true); }
+}
+let barMode = "";
 setInterval(() => {
-  if (!S.me || !S.me.session_expires_at) return;
+  if (!S.me || !S.me.session_expires_at) { bar.hidden = true; return; }
   const left = new Date(S.me.session_expires_at).getTime() - Date.now();
   const idleMs = (S.me.idle_minutes || 15) * 60000 - (Date.now() - lastActivity);
   if (idleMs <= 0) return signOut("You were signed out after being inactive.");
   if (left <= 0) return signOut("Your session ended. Please sign in again.");
   const soon = Math.min(left, idleMs);
-  if (soon < 60000 && !warned) { warned = true; toast(left <= idleMs ? "Your session ends in under a minute. Save what you're doing." : "Signing out in a minute because of inactivity."); }
-  if (soon >= 60000) warned = false;
-}, 5000);
+  if (soon > 120000) { bar.hidden = true; barMode = ""; return; }
+  const mode = left <= idleMs ? "limit" : "idle";
+  if (mode !== barMode || bar.hidden) {
+    barMode = mode;
+    bar.replaceChildren(
+      el("span", { class: "msg" }),
+      el("button", { type: "button", class: "primary", onclick: mode === "limit" ? staySignedIn : () => { lastActivity = Date.now(); bar.hidden = true; } },
+        mode === "limit" ? "Stay signed in" : "I'm still here"),
+      el("button", { type: "button", onclick: () => signOut() }, "Sign out"));
+    bar.hidden = false;
+  }
+  bar.querySelector(".msg").textContent = mode === "limit" ? `Your session ends in ${mmss(left)}.`
+    : `Still there? Signing out in ${mmss(idleMs)} because nothing has happened for a while.`;
+}, 1000);
 
 function go(view) {
   if (!allowed().some((v) => v[0] === view)) view = allowed()[0][0];

@@ -4,7 +4,7 @@ Self-hosted bill, paycheck, savings and investment tracker built around the **we
 roles, two-factor sign-in, alerts by email and phone push, and encryption at every layer: the database on disk,
 secrets inside it, and every byte of browser traffic.
 
-![version](https://img.shields.io/badge/version-3.3.0-blue)
+![version](https://img.shields.io/badge/version-3.4.0-blue)
 
 ## Features
 
@@ -39,7 +39,9 @@ secrets inside it, and every byte of browser traffic.
 | Secrets in the DB | TOTP seeds, SMTP password, ntfy token additionally sealed with AES-256-GCM (HKDF-derived key). Never returned by the API. |
 | Passwords | Argon2id, 12+ characters, same error for every login failure (no username discovery). |
 | Sign-in | Optional/required TOTP 2FA with one-time recovery codes and replay protection; lockout after 8 failures; per-IP throttling. |
-| Sessions | 256-bit random tokens stored as SHA-256; `HttpOnly; Secure; SameSite=Strict`. **Hard limit 15 minutes** from sign-in (Admin → System settings → Security, 5 minutes to 30 days), plus an idle limit; enforced by the server on every request (including sessions created under a longer limit) and by the browser, which signs you out on time with a one-minute warning, even if the page is just left open. Background refreshes don't count as activity. List and revoke sessions per device. |
+| Sessions | 256-bit random tokens stored as SHA-256; `HttpOnly; Secure; SameSite=Strict`. **Hard limit 15 minutes** from sign-in (Admin → System settings → Security, 5 minutes to 30 days), plus an idle limit; enforced by the server on every request (including sessions created under a longer limit) and by the browser, which signs you out on time even if the page is just left open. Two minutes before either limit a
+bar counts down with **Stay signed in** (starts a fresh session with a new token; the old one stops working) or
+**I'm still here** (for the idle limit). Background refreshes don't count as activity. List and revoke sessions per device. |
 | Requests | CSRF header + Origin check, strict CSP (no inline script/style), strict input models (unknown fields rejected), parameterized SQL, body size caps, API rate limit. |
 | Authorization | Role + permission checks on every endpoint server-side. API tokens are capped by their owner's permissions and can never do admin or account actions. |
 | Accountability | Audit log of sign-ins, failures, lockouts, permission changes, settings, tokens, backups, deletes. |
@@ -310,7 +312,7 @@ pip install -r requirements.txt pytest httpx
 export BT_DB_KEY=$(python -c 'import secrets;print(secrets.token_hex(32))') BT_COOKIE_SECURE=false
 python -m app.manage adduser dev admin
 uvicorn app.main:app --reload --port 8080
-python -m pytest -q        # 47 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
+python -m pytest -q        # 48 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
 pip-audit -r requirements.txt
 ```
 

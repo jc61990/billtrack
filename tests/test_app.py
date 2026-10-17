@@ -654,3 +654,20 @@ def test_admin_renames_user(admin, user, monkeypatch):
     assert user.put(f"/api/admin/users/{uid}", json={**body, "username": "selfrename"}, headers=H).status_code == 403
     admin.put(f"/api/admin/users/{uid}", json={**body, "username": "jc"}, headers=H)
     assert admin.put(f"/api/admin/users/{uid}", json=body, headers=H).status_code == 200  # omitted = unchanged
+
+
+def test_extend_session(user):
+    with db.tx() as con:   # 14 minutes into a 15-minute session
+        con.execute("UPDATE sessions SET created_at=? WHERE user_id=(SELECT id FROM users WHERE username='jc')",
+                    ((security.now_utc() - timedelta(minutes=14)).isoformat(),))
+    old_cookie = user.cookies.get("bt_session")
+    r = user.post("/api/me/session/extend", headers=H)
+    assert r.status_code == 200
+    from datetime import datetime as _dt
+    left = (_dt.fromisoformat(r.json()["session_expires_at"]) - security.now_utc()).total_seconds()
+    assert 14 * 60 < left <= 15 * 60                                   # a full new 15 minutes
+    assert user.cookies.get("bt_session") != old_cookie                # new token
+    assert user.get("/api/me").status_code == 200
+    stale = TestClient(app); stale.cookies.set("bt_session", old_cookie)
+    assert stale.get("/api/me").status_code == 401                     # old token is dead
+    assert TestClient(app).post("/api/me/session/extend", headers=H).status_code == 401   # needs a live session

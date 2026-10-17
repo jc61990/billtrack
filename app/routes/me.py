@@ -41,6 +41,7 @@ def me(p: Principal = Self):
     return {"id": u["id"], "username": u["username"], "display_name": u["display_name"], "email": u["email"],
             "has_feed": bool(u["ics_token_hash"]),
             "session_expires_at": ends, "idle_minutes": settings.get("idle_minutes"),
+            "session_minutes": settings.get("session_minutes"),
             "role": u["role"], "perms": sorted(p.perms), "totp_enabled": bool(u["totp_enabled"]),
             "mfa_setup_required": p.mfa_setup_required, "prefs": notify.prefs(u), "unread": unread,
             "version": __version__,
@@ -94,6 +95,21 @@ def update_me(body: MeIn, request: Request, p: Principal = SelfSession):
         con.execute("UPDATE users SET display_name=?, email=?, prefs=? WHERE id=?",
                     (body.display_name, body.email, json.dumps(body.prefs.model_dump()), p.user_id))
     return {"ok": True}
+
+
+@r.post("/me/session/extend")
+def extend_session(request: Request, response: Response, p: Principal = SelfSession):
+    """'Stay signed in': replace this session with a brand-new one (new token, fresh time limit). The old token stops
+    working immediately, so an extension never leaves a longer-lived copy of the cookie around."""
+    from ..routes.auth import _set_cookie
+    from ..security import client_ip, new_session
+    with tx() as con:
+        tok = new_session(con, p.user_id, client_ip(request), request.headers.get("user-agent", ""))
+        con.execute("DELETE FROM sessions WHERE token_hash=?", (p.session_hash,))
+        exp = con.execute("SELECT expires_at FROM sessions WHERE token_hash=?", (crypto.token_hash(tok),)).fetchone()[0]
+        audit(con, request, "session extended")
+    _set_cookie(response, tok)
+    return {"session_expires_at": exp}
 
 
 @r.post("/me/calendar-feed")

@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.4.0 - 2026-10-17
+### Added
+- **Stay signed in.** Two minutes before the session limit a bar at the top counts down ("Your session ends in
+  1:27") with **Stay signed in** and **Sign out**. Staying replaces the session with a new one (new token, full
+  limit again, old token invalid at once, logged in the audit log): `POST /api/me/session/extend`.
+- Idle detection gets the same bar ("Still there? Signing out in 1:43…") with **I'm still here**. Any click, key,
+  scroll or tap also counts.
+
 ## 3.3.0 - 2026-10-17
 ### Changed
 - Admin sections moved out of the tab strip into the **left menu**: Overview, Users, Invite codes, System settings,
