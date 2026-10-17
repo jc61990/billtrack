@@ -17,6 +17,9 @@ def _int(name: str, default: int) -> int:
 DB_PATH = os.getenv("BT_DB_PATH", "./data/billtrack.db")
 DB_KEY_FILE = os.getenv("BT_DB_KEY_FILE", "")          # 64 hex chars (preferred)
 DB_KEY = os.getenv("BT_DB_KEY", "")                    # inline alternative
+# Passphrase mode (2.9+): master key wrapped by passphrase + key file; unlocked copy lives only in /run (tmpfs)
+KEYRING = os.getenv("BT_KEYRING", "")                  # e.g. /etc/billtrack/keyring.json
+RUNTIME_KEY = os.getenv("BT_RUNTIME_KEY", "/run/billtrack/dek")
 COOKIE_SECURE = _bool("BT_COOKIE_SECURE", True)        # false only for plain-HTTP LAN testing
 ICS_TOKEN = os.getenv("BT_ICS_TOKEN", "")              # blank disables calendar feed
 ALLOWED_ORIGINS = [o.strip().rstrip("/") for o in os.getenv("BT_ALLOWED_ORIGINS", "").split(",") if o.strip()]

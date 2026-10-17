@@ -6,9 +6,20 @@ const card = (...kids) => { fill($("#auth"), el("div", { class: "auth-card" }, e
 const err = () => el("p", { class: "err", role: "alert" });
 const busy = async (btn, fn) => { btn.disabled = true; try { await fn(); } finally { btn.disabled = false; } };
 
-export function showAuth(cb) {
+export async function showAuth(cb) {
   if (cb) onSignedIn = cb;
   $("#app").hidden = true; $("#auth").hidden = false;
+  try {
+    const h = await (await fetch("/healthz", { cache: "no-store" })).json();
+    if (h.locked) {
+      fill($("#auth"), el("div", { class: "auth-card" }, el("div", { class: "brand" }, el("img", { src: "/icon.svg", alt: "" }), "BillTrack"),
+        el("h1", {}, "🔒 Locked"), el("p", {}, "The server was restarted and its data is encrypted. An admin needs to unlock it on the server:"),
+        el("code", { class: "secret" }, "sudo billtrack-manage unlock"),
+        el("p", { class: "muted" }, "This page refreshes by itself once it's unlocked.")));
+      setTimeout(() => showAuth(), 5000);
+      return;
+    }
+  } catch { /* fall through to sign-in */ }
   const hash = new URLSearchParams(location.hash.slice(1));
   if (hash.get("reset")) return resetScreen(hash.get("reset"));
   if (hash.get("invite")) return inviteScreen(hash.get("invite"));

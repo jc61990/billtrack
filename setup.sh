@@ -17,6 +17,8 @@ ENV_FILE=$CONF_DIR/billtrack.env
 KEY_FILE=$CONF_DIR/db.key
 INSTALL_CONF=$CONF_DIR/install.conf
 TLS_DIR=$CONF_DIR/tls
+KEYRING=$CONF_DIR/keyring.json
+RUNTIME_KEY=/run/billtrack/dek
 DB_FILE="$DATA_DIR/billtrack.db"
 BIND=127.0.0.1            # app stays on loopback; nginx is the only thing on the network
 PORT=8080
@@ -70,9 +72,32 @@ else
   FIRST_RUN=1
 fi
 REGEN_CERT=0; REGEN_CA=0
+RESTORE_FILE=""
+if [[ $FIRST_RUN == 1 && ! -f "$DB_FILE" && $INTERACTIVE == 1 ]]; then
+  echo
+  echo "BillTrack setup"
+  echo "---------------"
+  echo "  1) New install"
+  echo "  2) Restore from a disaster-recovery backup (.btdr) - picks up exactly where it left off"
+  while true; do
+    CH=$(ask "Choose 1 or 2" "1")
+    [[ "$CH" == 1 ]] && break
+    if [[ "$CH" == 2 ]]; then
+      while true; do
+        RESTORE_FILE=$(ask "Path to the .btdr file on this server" "")
+        [[ -f "$RESTORE_FILE" ]] && break
+        echo "  Not found: $RESTORE_FILE" >$TTY
+      done
+      RESTORE_FILE=$(readlink -f "$RESTORE_FILE")
+      break
+    fi
+  done
+fi
 
 echo
-if [[ $FIRST_RUN == 1 ]]; then
+if [[ -n "$RESTORE_FILE" ]]; then
+  echo "Restoring from $RESTORE_FILE (HTTPS and other answers come from the backup)"
+elif [[ $FIRST_RUN == 1 ]]; then
   echo "BillTrack setup"
   echo "---------------"
 else
@@ -80,7 +105,7 @@ else
   echo "  HTTPS on port 443 (nginx + self-signed cert): $( [[ $PROXY == 1 ]] && echo yes || echo 'no (app on 127.0.0.1:8080 only)')"
   [[ $PROXY == 1 ]] && echo "  Extra certificate names/IPs:                  ${EXTRA_SAN:-none}"
 fi
-if [[ $FIRST_RUN == 1 ]] || ! yesno "Keep these settings?" Y; then
+if [[ -z "$RESTORE_FILE" ]] && { [[ $FIRST_RUN == 1 ]] || ! yesno "Keep these settings?" Y; }; then
   if yesno "Serve BillTrack on HTTPS port 443 with nginx and a self-signed certificate? (No = you'll use Tailscale or your own proxy)" Y; then
     PROXY=1
     echo "  The certificate automatically covers this machine's hostname, hostname.local, localhost and all its IPs."
@@ -101,6 +126,7 @@ fi
 [[ $INTERACTIVE == 1 ]] || echo "(no terminal - using saved/default answers)"
 install -d -m 750 "$CONF_DIR"
 ( umask 077; printf 'PROXY=%s\nEXTRA_SAN=%s\n' "$PROXY" "$EXTRA_SAN" > "$INSTALL_CONF" )
+id "billtrack" &>/dev/null && chown root:billtrack "$INSTALL_CONF" && chmod 640 "$INSTALL_CONF" || true
 echo
 
 echo "==> Packages"
@@ -145,22 +171,48 @@ else
   echo "    Keeping existing $KEY_FILE"
 fi
 
+BT_ENV=(BT_DB_PATH="$DB_FILE" BT_DB_KEY_FILE="$KEY_FILE" BT_KEYRING="$KEYRING" BT_RUNTIME_KEY="$RUNTIME_KEY"
+        BT_ENV_FILE="$ENV_FILE" BT_INSTALL_CONF="$INSTALL_CONF" BT_TLS_DIR="$TLS_DIR" PYTHONPATH="$APP_DIR/src")
 manage() {  # run the admin CLI as the service user with the right env
-  sudo -u "$SVC_USER" env BT_DB_PATH="$DB_FILE" BT_DB_KEY_FILE="$KEY_FILE" PYTHONPATH="$APP_DIR/src" \
-    "$APP_DIR/.venv/bin/python" -m app.manage "$@"
+  sudo -u "$SVC_USER" env "${BT_ENV[@]}" "$APP_DIR/.venv/bin/python" -m app.manage "$@"
+}
+manage_root() {  # key and DR commands: need to read/write /etc/billtrack and /run/billtrack
+  env "${BT_ENV[@]}" "$APP_DIR/.venv/bin/python" -m app.manage "$@"
+}
+manage_py() {  # run a python snippet against the app as the service user
+  sudo -u "$SVC_USER" env "${BT_ENV[@]}" "$APP_DIR/.venv/bin/python" -c "$1"
 }
 
-manage_py() {  # run a python snippet against the app as the service user
-  sudo -u "$SVC_USER" env BT_DB_PATH="$DB_FILE" BT_DB_KEY_FILE="$KEY_FILE" PYTHONPATH="$APP_DIR/src" \
-    "$APP_DIR/.venv/bin/python" -c "$1"
-}
+# /run/billtrack holds the unlocked data key in RAM only; recreated empty at every boot
+cat > /etc/tmpfiles.d/billtrack.conf <<TMPF
+d /run/billtrack 0700 $SVC_USER $SVC_USER -
+TMPF
+install -d -m 700 -o "$SVC_USER" -g "$SVC_USER" /run/billtrack
 
 cat > /usr/local/bin/billtrack-manage <<WRAP
 #!/usr/bin/env bash
-exec sudo -u $SVC_USER env BT_DB_PATH=$DB_FILE BT_DB_KEY_FILE=$KEY_FILE PYTHONPATH=$APP_DIR/src \\
-  $APP_DIR/.venv/bin/python -m app.manage "\$@"
+# key / DR commands run as root (they manage /etc/billtrack and /run/billtrack); everything else as $SVC_USER
+ENVV=(BT_DB_PATH=$DB_FILE BT_DB_KEY_FILE=$KEY_FILE BT_KEYRING=$KEYRING BT_RUNTIME_KEY=$RUNTIME_KEY \\
+      BT_ENV_FILE=$ENV_FILE BT_INSTALL_CONF=$INSTALL_CONF BT_TLS_DIR=$TLS_DIR PYTHONPATH=$APP_DIR/src)
+case "\$1" in
+  set-passphrase|unlock|lock|change-passphrase|dr-export|dr-import)
+    [[ \$EUID -eq 0 ]] || { echo "Run with sudo: sudo billtrack-manage \$*"; exit 1; }
+    exec env "\${ENVV[@]}" $APP_DIR/.venv/bin/python -m app.manage "\$@" ;;
+  *) exec sudo -u $SVC_USER env "\${ENVV[@]}" $APP_DIR/.venv/bin/python -m app.manage "\$@" ;;
+esac
 WRAP
 chmod 755 /usr/local/bin/billtrack-manage
+
+fix_keyring_perms() { [[ -f "$KEYRING" ]] && chown root:"$SVC_USER" "$KEYRING" && chmod 640 "$KEYRING"; true; }
+
+need_tty() { [[ $INTERACTIVE == 1 ]] || { echo "!! $1 needs the passphrase: run sudo ./setup.sh in a terminal."; exit 1; }; }
+
+# Unlock first if the passphrase is set but the key isn't in memory (e.g. after a reboot) - backups need it
+if [[ -z "$RESTORE_FILE" && -f "$KEYRING" && ! -f "$RUNTIME_KEY" ]]; then
+  echo "==> BillTrack is locked (rebooted?). Unlock to continue."
+  need_tty "Unlocking"
+  manage_root unlock </dev/tty
+fi
 
 if [[ -f "$DB_FILE" ]] && head -c 16 "$DB_FILE" | grep -q "SQLite format 3"; then
   echo "==> Encrypting existing plaintext database"
@@ -200,6 +252,37 @@ if [[ -f "$DB_FILE" ]] && ! head -c 16 "$DB_FILE" | grep -q "SQLite format 3"; t
   echo "    Backups: $BACKUP_DIR  (roll back: sudo systemctl stop billtrack && sudo billtrack-manage rollback <file>)"
 fi
 
+# ---------------------------------------------------------------------------------------------------------
+# Database passphrase (2.9+): restore a DR backup, or set the passphrase on a new install / older install.
+# ---------------------------------------------------------------------------------------------------------
+if [[ -n "$RESTORE_FILE" ]]; then
+  echo "==> Restoring disaster-recovery backup"
+  echo "    You need BOTH the backup password and the database passphrase."
+  systemctl stop billtrack 2>/dev/null || true
+  manage_root dr-import "$RESTORE_FILE" </dev/tty
+  fix_keyring_perms
+  # the backup's own install answers (HTTPS, extra names) now apply
+  if [[ -f $INSTALL_CONF ]]; then
+    while IFS='=' read -r k v; do
+      case "$k" in
+        PROXY) [[ "$v" =~ ^[01]$ ]] && PROXY=$v ;;
+        EXTRA_SAN) valid_san "$v" && EXTRA_SAN=$v ;;
+      esac
+    done < "$INSTALL_CONF"
+  fi
+elif [[ ! -f "$KEYRING" ]]; then
+  echo "==> Database passphrase"
+  if [[ -f "$DB_FILE" ]]; then
+    echo "    This version adds a passphrase to the database encryption. After this, opening the data needs"
+    echo "    the passphrase AND this server's key file; neither works alone. You'll type it after each reboot"
+    echo "    (sudo billtrack-manage unlock) and to restore any backup. Your data is re-encrypted now."
+  fi
+  need_tty "Setting the passphrase"
+  systemctl stop billtrack 2>/dev/null || true
+  manage_root set-passphrase </dev/tty
+  fix_keyring_perms
+fi
+
 echo "==> systemd unit"
 cat > /etc/systemd/system/billtrack.service <<UNIT
 [Unit]
@@ -214,6 +297,11 @@ WorkingDirectory=$APP_DIR/src
 EnvironmentFile=$ENV_FILE
 Environment=BT_DB_PATH=$DB_FILE
 Environment=BT_DB_KEY_FILE=$KEY_FILE
+Environment=BT_KEYRING=$KEYRING
+Environment=BT_RUNTIME_KEY=$RUNTIME_KEY
+Environment=BT_ENV_FILE=$ENV_FILE
+Environment=BT_INSTALL_CONF=$INSTALL_CONF
+Environment=BT_TLS_DIR=$TLS_DIR
 ExecStart=$APP_DIR/.venv/bin/uvicorn app.main:app --host $BIND --port $PORT --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-server-header --timeout-graceful-shutdown 10
 Restart=on-failure
 TimeoutStopSec=20
@@ -426,6 +514,10 @@ if [[ $NEW_KEY == 1 ]]; then
 fi
 echo
 echo "==> Done. BillTrack is at: $URL"
+echo
+echo "    After every reboot BillTrack starts LOCKED. Unlock it with:  sudo billtrack-manage unlock"
+echo "    Disaster-recovery backup:  sudo billtrack-manage dr-export /root/billtrack-\$(date +%F).btdr"
+echo "    (or Admin > Backup & system). Restore on a fresh server: run setup.sh and choose 'Restore'."
 if [[ $PROXY == 1 ]]; then
   FP=$(openssl x509 -in "$TLS_DIR/ca.crt" -noout -fingerprint -sha256 | cut -d= -f2)
   cat <<MSG

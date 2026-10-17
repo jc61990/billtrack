@@ -1,5 +1,35 @@
 # Changelog
 
+## 2.9.0 - 2026-10-16
+### Security
+- **Passphrase-protected database.** A random 256-bit data key encrypts the database (SQLCipher) and derives the
+  field-secret key. It is wrapped with AES-256-GCM under HKDF(Argon2id(passphrase) ‖ key file), so opening the data
+  needs the passphrase **and** the server's key file. The unlocked key exists only in `/run/billtrack/dek` (tmpfs,
+  service user, 0400) and is gone at reboot.
+- **Locked mode:** without the unlocked key the app starts, serves a "Locked" page and `503 {"locked": true}` for
+  the API, skips scheduled work, and opens the database by itself within seconds of `billtrack-manage unlock`.
+- Upgrade path: setup asks for a passphrase, writes the keyring before touching data, re-seals TOTP/SMTP/ntfy/Plaid
+  secrets, re-encrypts the live database (`PRAGMA rekey`) and every on-server backup.
+### Added
+- **Disaster-recovery bundles (`.btdr`):** database + portable key (passphrase-wrapped) + env file + install answers
+  + HTTPS CA, in a tar encrypted with a separate **backup password** (Argon2id → AES-256-GCM, 1 MiB chunks bound to
+  the header, index and final flag: truncation/reordering/tampering detected). Manifest with SHA-256 per file and
+  key fingerprint check. Restoring needs backup password + database passphrase.
+- `setup.sh` on a blank server: **New install / Restore from a DR backup**. Restore takes the file and both
+  secrets, makes a new key file + keyring for the new server, restores config/CA, re-issues the server certificate,
+  and continues as a normal install. After reboots setup unlocks first (needed for the pre-upgrade backup).
+- CLI: `set-passphrase`, `unlock`, `lock`, `change-passphrase`, `key-status`, `dr-export`, `dr-import`
+  (key/DR commands run as root via `billtrack-manage`; others as the service user).
+- Admin → Backup & system: Encryption card (mode, key fingerprint); **Download DR backup**; stored backups download
+  as DR bundles. `POST /api/admin/dr-backup`.
+- systemd: `BT_KEYRING`, `BT_RUNTIME_KEY`, config paths; `/etc/tmpfiles.d/billtrack.conf` recreates `/run/billtrack`.
+- Tests: two-key requirement, wrong passphrase / wrong key file, migration incl. sealed secrets and old backups,
+  locked API, DR round trip to a fresh "server", wrong backup password, wrong passphrase, tampering, truncation,
+  passphrase change.
+### Changed
+- The passphrase "Download a fresh copy" is replaced by DR backups. `billtrack-manage backup/restore` still handle
+  older passphrase backup files.
+
 ## 2.8.3 - 2026-10-16
 ### Fixed
 - Plaid Link showed as a small box at the bottom of the screen on iPhone instead of full screen. Plaid positions

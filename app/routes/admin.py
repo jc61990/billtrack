@@ -61,7 +61,10 @@ def system_info(p: Principal = Admin):
         last = {k: _meta_get(con, f"maint:{k}") for k in ("compact", "integrity", "optimize", "checkpoint", "prune")}
         cipher = {k: con.execute(f"PRAGMA {k}").fetchone()[0] for k in ("cipher_version", "cipher_provider_version")}
     backups = list_backups()
-    return {"version": __version__, **cipher, "db_path": dbp, "backup_dir": bdir,
+    from .. import keys as _keys
+    keymode = "passphrase" if _keys.enabled() else "keyfile"
+    fp = _keys.fingerprint(bytes.fromhex(db.load_key())) if keymode == "passphrase" else None
+    return {"version": __version__, **cipher, "key_mode": keymode, "key_fingerprint": fp, "db_path": dbp, "backup_dir": bdir,
             "db_bytes": _fsize(dbp), "wal_bytes": _fsize(dbp + "-wal"), "page_size": ps, "pages": pc,
             "free_bytes": free * ps, "backups_bytes": sum(b["bytes"] for b in backups), "backups": len(backups),
             "disk_total": du.total, "disk_used": du.used, "disk_free": du.free, "rows": tables, "last": last}
@@ -200,27 +203,40 @@ def restore_backup(name: str, body: ConfirmIn, request: Request, p: Principal = 
 
 
 class DlIn(In):
-    passphrase: Annotated[str, StringConstraints(min_length=12, max_length=256)]
+    password: Annotated[str, StringConstraints(min_length=12, max_length=1024)]
+
+
+def _dr_response(data: bytes, name: str):
+    return Response(data, media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+
+
+def _dr(password: str, snapshot: str | None = None) -> bytes:
+    from .. import dr, keys as _keys
+    if not _keys.enabled():
+        raise HTTPException(409, "Set a database passphrase first: on the server run sudo billtrack-manage set-passphrase")
+    try:
+        return dr.export_bundle(password, dr.default_extra_files(), snapshot)
+    except dr.BundleError as e:
+        raise HTTPException(409, str(e)) from None
 
 
 @r.post("/backups/{name}/download")
 def download_backup(name: str, body: DlIn, request: Request, p: Principal = Admin):
-    """Re-lock the stored backup with a passphrase you choose, so the file is usable away from this server."""
-    path = _backup_path(name)
-    with tempfile.TemporaryDirectory() as td:
-        out = os.path.join(td, "x.db")
-        con = db.connect(path)
-        try:
-            con.execute("ATTACH DATABASE ? AS bk KEY ?", (out, body.passphrase))
-            con.execute("SELECT sqlcipher_export('bk')")
-            con.execute("DETACH DATABASE bk")
-        finally:
-            con.close()
-        data = open(out, "rb").read()
+    """A stored backup as a full disaster-recovery file (backup password + database passphrase to restore)."""
+    data = _dr(body.password, _backup_path(name))
     with tx() as con:
-        audit(con, request, "backup downloaded", name)
-    return Response(data, media_type="application/octet-stream",
-                    headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+        audit(con, request, "DR backup downloaded", name)
+    return _dr_response(data, name.replace(".db", ".btdr"))
+
+
+@r.post("/dr-backup")
+def dr_backup(body: DlIn, request: Request, p: Principal = Admin):
+    """Full disaster-recovery file of the current state."""
+    data = _dr(body.password)
+    with tx() as con:
+        audit(con, request, "DR backup downloaded", "current")
+    return _dr_response(data, f"billtrack-{ledger.today().isoformat()}.btdr")
 
 
 @r.get("/meta")

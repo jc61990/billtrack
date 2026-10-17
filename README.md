@@ -4,7 +4,7 @@ Self-hosted bill, paycheck, savings and investment tracker built around the **we
 roles, two-factor sign-in, alerts by email and phone push, and encryption at every layer: the database on disk,
 secrets inside it, and every byte of browser traffic.
 
-![version](https://img.shields.io/badge/version-2.8.3-blue)
+![version](https://img.shields.io/badge/version-2.9.0-blue)
 
 ## Features
 
@@ -33,7 +33,8 @@ secrets inside it, and every byte of browser traffic.
 | Browser ↔ server | TLS (your proxy / Tailscale) **plus** an application-layer encrypted channel: fresh ECDH P-256 key exchange on every page load → HKDF-SHA256 → AES-256-GCM. Every API call is one `POST /api/x` of random-looking base64; method, path, query, body, status and data are all inside. Random nonce + random padding: the same data never looks the same twice. Replays rejected, responses bound to requests, channel bound to the session. |
 | Page source | Only the empty app shell, regenerated per request with a random CSP nonce and filler, so it's different on every load. No data is ever in the HTML. |
 | Browser storage | None. Data lives only in JS memory while displayed; the service worker caches static files only, never API data. |
-| Database | SQLCipher 4: AES-256 per page + HMAC-SHA512, WAL included, temp tables in memory. Raw 256-bit key from `BT_DB_KEY_FILE`. |
+| Database | SQLCipher 4: AES-256 per page + HMAC-SHA512, WAL included, temp tables in memory, keyed by a random 256-bit **data key**. The data key is wrapped by **your passphrase (Argon2id) + this server's key file**: both are needed, neither works alone. After a reboot the app is **locked** until `sudo billtrack-manage unlock`; the unlocked key lives only in `/run` (RAM). |
+| Disaster-recovery backups | One `.btdr` file (database, settings, install answers, HTTPS CA): AES-256-GCM in authenticated chunks under a **backup password** (Argon2id), and the data inside still needs the **database passphrase**. Wrong password, wrong passphrase, truncation or any modified byte is refused. |
 | Account numbers | Only the last 4 digits are accepted (`^\d{4}$`); full card or account numbers are rejected by the API. BillTrack never connects to a bank. |
 | Secrets in the DB | TOTP seeds, SMTP password, ntfy token additionally sealed with AES-256-GCM (HKDF-derived key). Never returned by the API. |
 | Passwords | Argon2id, 12+ characters, same error for every login failure (no username discovery). |
@@ -162,6 +163,45 @@ sudo systemctl stop billtrack && billtrack-manage rekey /etc/billtrack/db.key.ne
 sudo mv /etc/billtrack/db.key.new /etc/billtrack/db.key && sudo systemctl start billtrack
 ```
 
+## Encryption keys and disaster recovery
+
+### Keys
+| Secret | Where | Needed for |
+|---|---|---|
+| **Database passphrase** | your head / password manager | unlocking after every reboot, restoring any backup |
+| **Key file** `/etc/billtrack/db.key` | this server | unlocking on this server (with the passphrase) |
+| **Backup password** | password manager (choose per backup; must differ from the passphrase) | opening a `.btdr` file |
+
+- Upgrading from 2.8: `sudo ./setup.sh` explains and asks you to choose the passphrase, then re-encrypts the
+  database and every on-server backup with a new data key. New installs choose it during setup.
+- After a reboot: `sudo billtrack-manage unlock`. Until then the web page shows **Locked** and nothing is served or
+  sent; it refreshes itself once unlocked. `sudo billtrack-manage lock` forgets the key on demand.
+- `sudo billtrack-manage change-passphrase` re-wraps the data key (no re-encryption). DR files made earlier still
+  open with the passphrase that was current when they were made.
+- `billtrack-manage key-status` shows locked/unlocked and the data-key fingerprint.
+- **There is no recovery for a lost passphrase.** That is the point.
+
+### Disaster-recovery backup
+```bash
+sudo billtrack-manage dr-export /root/billtrack-$(date +%F).btdr     # asks for a backup password
+```
+Includes the database, `billtrack.env`, the installer's answers, and the HTTPS CA certificate **and private key**
+(so devices that trust it keep working). Admin → Backup & system → **Download DR backup** (and *Download as DR
+backup* on any stored backup) makes the same file from the browser, but the service can't read the CA files, so
+those are left out; restoring then makes a new CA that devices must trust again. Copy `.btdr` files off the server.
+
+### Restore onto a fresh server
+1. Install the OS, copy the `.btdr` file to it, `git clone` BillTrack, `cd billtrack`.
+2. `sudo ./setup.sh` → choose **2) Restore from a disaster-recovery backup** → give the file path.
+3. Enter the **backup password**, then the **database passphrase**.
+
+Setup installs everything, restores the database and configuration, makes a new key file for this server and
+re-wraps the data key for it (the old server's key file is never needed and can't open the new one), re-issues the
+HTTPS certificate for this machine's names/IPs under the restored CA, and starts the service. Users, sessions,
+2FA, alerts, bank links and history carry on. Point DNS or bookmarks at the new IP if it changed. To restore onto an
+existing install instead: `sudo systemctl stop billtrack && sudo billtrack-manage dr-import <file>` (the previous
+database is kept as `billtrack.db.before-import-*`), then start the service.
+
 ## Bank sync (Plaid)
 
 1. Sign up at **dashboard.plaid.com** and choose **Personal use**. The free Trial plan allows up to 10 bank
@@ -238,7 +278,7 @@ pip install -r requirements.txt pytest httpx
 export BT_DB_KEY=$(python -c 'import secrets;print(secrets.token_hex(32))') BT_COOKIE_SECURE=false
 python -m app.manage adduser dev admin
 uvicorn app.main:app --reload --port 8080
-python -m pytest -q        # 36 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
+python -m pytest -q        # 41 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
 pip-audit -r requirements.txt
 ```
 

@@ -22,21 +22,38 @@ MAX_BODY = 256 * 1024
 api_limit = Throttle(config.RATE_LIMIT_PER_MIN, 60)
 
 
+def _start():
+    db.init()
+    settings.reset_cache()
+    settings.tz()
+
+
+async def _wait_for_unlock():
+    while db.locked():
+        await asyncio.sleep(3)
+    _start()
+    log.info("unlocked: database opened")
+
+
 @asynccontextmanager
 async def lifespan(_app):
+    waiter = None
     try:
-        db.init()
-        settings.reset_cache()
-        settings.tz()
+        _start()
     except db.KeyError_ as e:
-        log.critical("%s", e)
-        raise SystemExit(1) from None
+        if not db.locked():
+            log.critical("%s", e)
+            raise SystemExit(1) from None
+        log.warning("BillTrack is LOCKED. Run on the server: sudo billtrack-manage unlock")
+        waiter = asyncio.create_task(_wait_for_unlock())
     import anyio.to_thread
     from . import watchdog
     watchdog.start(asyncio.get_running_loop(), anyio.to_thread.current_default_thread_limiter())
     task = asyncio.create_task(notify.loop(config.CHECK_INTERVAL_MIN))
     yield
     task.cancel()
+    if waiter:
+        waiter.cancel()
 
 
 api = FastAPI(title="BillTrack API", version=__version__, lifespan=lifespan,
@@ -51,8 +68,11 @@ def origin_allowed(scheme: str, host: str, origin: str | None, fwd_host: str | N
     if not origin:
         return True
     ok = {f"{scheme}://{host}", *config.ALLOWED_ORIGINS}
-    if settings.get("base_url"):
-        ok.add(settings.get("base_url"))
+    try:
+        if settings.get("base_url"):
+            ok.add(settings.get("base_url"))
+    except db.KeyError_:      # locked: settings unavailable, same-host check still applies
+        pass
     if fwd_host:
         ok.add(f"https://{fwd_host}")
     return origin.rstrip("/") in {o.rstrip("/") for o in ok}
@@ -98,6 +118,9 @@ async def guard(request: Request, call_next):
 
 @api.exception_handler(db.KeyError_)
 async def key_error(_req, exc):
+    if db.locked():
+        return JSONResponse({"detail": "BillTrack is locked. An admin must run on the server: sudo billtrack-manage unlock",
+                             "locked": True}, 503)
     log.error("database key problem: %s", exc)
     return JSONResponse({"detail": "Server storage error"}, 500)
 
@@ -149,7 +172,7 @@ def ics(token: str):
 
 @api.get("/healthz", include_in_schema=False)
 def healthz():
-    return {"ok": True}
+    return {"ok": True, "locked": db.locked()}
 
 
 _INDEX = (STATIC / "index.html").read_text()

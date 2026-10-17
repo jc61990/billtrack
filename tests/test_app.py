@@ -450,8 +450,8 @@ def test_maintenance_and_server_backups(admin):
     kinds = {b["kind"] for b in login_again.get("/api/admin/backups").json()}
     assert kinds == {"Manual", "Before restore"}
     # download re-locked with a passphrase
-    d = login_again.post(f"/api/admin/backups/{name}/download", json={"passphrase": "download pass 123"}, headers=H)
-    assert d.status_code == 200 and b"BeforeBackup" not in d.content
+    d = login_again.post(f"/api/admin/backups/{name}/download", json={"password": "download pass 123"}, headers=H)
+    assert d.status_code == 409 and "passphrase" in d.text      # DR downloads need passphrase mode (tested separately)
     # path traversal / bogus names
     for bad in ("..%2F..%2Fetc%2Fpasswd", "billtrack.db", "x.db"):
         assert login_again.delete(f"/api/admin/backups/{bad}", headers=H).status_code in (404, 405)  # never served

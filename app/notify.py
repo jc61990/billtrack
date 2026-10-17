@@ -296,8 +296,11 @@ def next_reminder(cur: str, rec: str, after: str) -> str | None:
 
 
 async def loop(interval_min: int):
-    from . import plaid
+    from . import db as _db, plaid
     while True:
+        if _db.locked():                 # nothing to do until an admin unlocks
+            await asyncio.sleep(30)
+            continue
         try:
             await asyncio.to_thread(plaid.sync_all, True)   # before alerts, so alerts see fresh balances
         except Exception:

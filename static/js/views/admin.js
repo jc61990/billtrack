@@ -348,7 +348,7 @@ async function system(root) {
 
   const list = await api("GET", "/api/admin/backups");
   const bkMenu = (b) => [
-    { label: "Download (locked with a passphrase)…", action: () => downloadStored(b) },
+    { label: "Download as DR backup…", action: () => downloadStored(b) },
     { label: "Restore this backup…", action: () => restoreStored(b) },
     "-", { label: "Delete", danger: true, action: async () => {
       if (await confirmBox("Delete backup?", `${b.name} (${fmtBytes(b.bytes)}) will be removed from the server.`, "Delete"))
@@ -372,20 +372,27 @@ async function system(root) {
           catch (x) { toast(x.message, true); }
           refresh();
         } }, "Back up now"),
-        el("button", { type: "button", onclick: backup }, "Download a fresh copy…"))),
+        el("button", { type: "button", onclick: backup }, "Download DR backup…"))),
     el("p", { class: "muted small" }, `Stored in ${m.backup_dir}. The newest 7 of each kind are kept (upgrade, manual, before-restore). `
       + "Click a backup to download, restore or delete it."),
     list.length ? el("div", { class: "scroll-x" }, el("table", { class: "tbl" },
       el("tr", {}, el("th", {}, "Created"), el("th", {}, "Kind"), el("th", { class: "r" }, "Size"), el("th")), rows))
       : el("p", { class: "muted" }, "No backups on the server yet."));
 
+  const enc = el("section", { class: "card" }, el("h2", {}, "Encryption"),
+    m.key_mode === "passphrase"
+      ? el("div", {}, el("p", {}, "✓ Database locked with a passphrase + this server's key file (both needed). ",
+          el("span", { class: "muted small" }, `Data key fingerprint ${m.key_fingerprint}`)),
+        el("p", { class: "muted small" }, "After a reboot BillTrack stays locked until: sudo billtrack-manage unlock · "
+          + "Change passphrase: sudo billtrack-manage change-passphrase"))
+      : el("p", { class: "out" }, "Key-file only. Add a passphrase (re-encrypts the data) by running sudo ./setup.sh, or: sudo billtrack-manage set-passphrase"));
   const sys = el("section", { class: "card" }, el("h2", {}, "System"),
     el("table", { class: "tbl" }, [["BillTrack", m.version], ["Database encryption", `SQLCipher ${m.cipher_version}`],
       ["Crypto library", m.cipher_provider_version],
       ["Records", Object.entries(m.rows).map(([k, v]) => `${k.replace(/_/g, " ")} ${v}`).join(" · ")]]
       .map(([k, v]) => el("tr", {}, el("th", {}, k), el("td", { class: "small" }, v)))));
 
-  fill(root, storage, maint, backupsCard, sys);
+  fill(root, enc, storage, maint, backupsCard, sys);
 }
 
 function passphraseDialog(title, note, onOk) {
@@ -393,15 +400,20 @@ function passphraseDialog(title, note, onOk) {
   const pw2 = el("input", { type: "password", autocomplete: "new-password", required: true });
   const err = el("p", { class: "err", role: "alert" });
   const form = showDialog(title, el("div", { class: "stack" }, el("p", { class: "muted" }, note),
-    el("label", {}, "Passphrase (12+ characters)", pw), el("label", {}, "Confirm", pw2), err),
+    el("label", {}, "Backup password (12+ characters, different from the database passphrase)", pw), el("label", {}, "Confirm", pw2), err),
   [el("button", { type: "submit", class: "primary" }, "Download")]);
   form.onsubmit = async (e) => {
     e.preventDefault();
     if (pw.value.length < 12) { err.textContent = "At least 12 characters"; return; }
-    if (pw.value !== pw2.value) { err.textContent = "Passphrases don't match"; return; }
-    try { await onOk(pw.value); closeDialog(); toast("Downloaded"); } catch (x) { err.textContent = x.message; }
+    if (pw.value !== pw2.value) { err.textContent = "Passwords don't match"; return; }
+    const btn = form.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "Encrypting…";
+    try { await onOk(pw.value); closeDialog(); toast("Downloaded"); } catch (x) { err.textContent = x.message; btn.disabled = false; btn.textContent = "Download"; }
   };
 }
+
+const DR_NOTE = "A complete disaster-recovery file: database, settings, install answers and certificates. It's encrypted with the backup "
+  + "password you choose here, and the data inside stays locked with the database passphrase. Restoring on any server needs BOTH. "
+  + "The HTTPS CA's private key is only included when exported as root: sudo billtrack-manage dr-export <file>.";
 
 function saveBlob(blob, name) {
   const url = URL.createObjectURL(blob);
@@ -410,13 +422,13 @@ function saveBlob(blob, name) {
 }
 
 function backup() {
-  passphraseDialog("Download a fresh copy", "A copy of the database right now, locked with a passphrase you choose (not stored anywhere). Restore it with billtrack-manage restore.",
-    async (pass) => saveBlob(await (await api("POST", "/api/admin/backup", { passphrase: pass }, { raw: true })).blob(), `billtrack-backup-${S.me.today}.db`));
+  passphraseDialog("Download DR backup", DR_NOTE,
+    async (pass) => saveBlob(await (await api("POST", "/api/admin/dr-backup", { password: pass }, { raw: true })).blob(), `billtrack-${S.me.today}.btdr`));
 }
 
 function downloadStored(b) {
-  passphraseDialog(`Download ${b.kind.toLowerCase()} backup`, "Backups on the server are locked with the server's key. The download is re-locked with a passphrase you choose so you can keep it somewhere else.",
-    async (pass) => saveBlob(await (await api("POST", `/api/admin/backups/${encodeURIComponent(b.name)}/download`, { passphrase: pass }, { raw: true })).blob(), b.name));
+  passphraseDialog(`Download ${b.kind.toLowerCase()} backup`, DR_NOTE,
+    async (pass) => saveBlob(await (await api("POST", `/api/admin/backups/${encodeURIComponent(b.name)}/download`, { password: pass }, { raw: true })).blob(), b.name.replace(/\.db$/, ".btdr")));
 }
 
 function restoreStored(b) {

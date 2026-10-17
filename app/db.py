@@ -202,6 +202,17 @@ def new_key() -> str:
 
 
 def load_key() -> str:
+    """The SQLCipher key. Passphrase mode: the unlocked data key from /run (raises Locked if not unlocked).
+    Legacy mode (before 2.9 migration, and tests): the key file / BT_DB_KEY directly."""
+    from . import keys
+    if keys.enabled():
+        try:
+            key = keys.runtime_dek_hex()
+        except keys.Locked as e:
+            raise KeyError_(str(e)) from None
+        if not _HEX64.match(key):
+            raise KeyError_("Unlocked key is malformed; run billtrack-manage unlock again")
+        return key
     key = ""
     if config.DB_KEY_FILE:
         try:
@@ -215,6 +226,29 @@ def load_key() -> str:
     if not _HEX64.match(key):  # strict format = nothing else can reach the PRAGMA string
         raise KeyError_("Database key must be exactly 64 hex characters (256-bit)")
     return key
+
+
+def locked() -> bool:
+    from . import keys
+    if not keys.enabled():
+        return False
+    try:
+        keys.runtime_dek_hex()
+        return False
+    except keys.Locked:
+        return True
+
+
+def rekey_file(path: str, old_key: str, new_key: str):
+    """Re-encrypt one SQLCipher file in place (e.g. an older backup) from old_key to new_key."""
+    con = sqlite.connect(path)
+    try:
+        con.execute(f"PRAGMA key = \"x'{old_key}'\"")
+        con.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        con.execute(f"PRAGMA rekey = \"x'{new_key}'\"")
+    finally:
+        con.close()
 
 
 def is_plaintext(path: str) -> bool:
