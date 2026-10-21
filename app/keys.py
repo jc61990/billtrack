@@ -166,11 +166,20 @@ def write_runtime(dek: bytes, path: str | None = None):
 
 
 def clear_runtime(path: str | None = None):
+    """Forget the unlocked key. The file is read-only (0400), so make it writable before the best-effort overwrite
+    (tmpfs: there's no disk remanence anyway); it's removed even if the overwrite isn't possible."""
     p = path or config.RUNTIME_KEY
-    if os.path.exists(p):
-        with open(p, "r+b") as f:          # best effort overwrite (tmpfs: no disk remanence anyway)
+    if not os.path.exists(p):
+        return
+    try:
+        os.chmod(p, 0o600)
+        with open(p, "r+b") as f:
             f.write(b"0" * os.path.getsize(p))
-        os.remove(p)
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError:
+        pass
+    os.remove(p)
 
 
 def runtime_dek_hex() -> str:

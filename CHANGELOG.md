@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.5.3 - 2026-10-17
+### Fixed
+- **GitHub CI "test-and-audit" failed** (4 key-storage tests). `keys.clear_runtime()` (used by
+  `billtrack-manage lock` and the tests) opened the read-only (0400) unlocked-key file for writing before deleting
+  it. Root can, a normal user can't, so it passed locally (root) and failed on GitHub's non-root runner. It now
+  makes the file writable first and removes it even if the overwrite isn't possible. No effect on production
+  (`lock` runs as root), but CI is green again.
+- Verified the full CI job the way GitHub runs it: clean venv, non-root user, `pytest` (51 passed),
+  `pip-audit --strict` (no known vulnerabilities), and the frontend lint on a fresh checkout (0 errors).
+
 ## 3.5.2 - 2026-10-17
 ### Fixed
 - **Admin → Users showed "ROLE_HELP is not defined".** The definition was lost when the admin tabs moved to the
