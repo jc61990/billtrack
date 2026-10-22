@@ -3,6 +3,7 @@ from datetime import timedelta
 
 import pytest
 
+from datetime import date  # noqa: E402
 from app import db, ledger, plaid, settings
 from tests.test_app import H, admin, login, mkuser, user  # noqa: F401  (fixtures)
 
@@ -134,3 +135,61 @@ def test_plaid_secret_sealed(admin, fake):  # Plaid keys are a system setting: a
         raw = con.execute("SELECT value FROM settings WHERE key='plaid_secret'").fetchone()[0]
     assert "sekrit" not in raw
     assert "plaid_secret" not in admin.get("/api/admin/settings").json()
+
+
+def test_bill_autopilot(user, fake):
+    """Name matching, 'varies' amounts, price-change and due-day suggestions, and finding new recurring bills."""
+    t = ledger.today()
+    with db.tx() as con:
+        con.execute("DELETE FROM bill_suggestions"); con.execute("DELETE FROM notifications")
+    user.post("/api/plaid/exchange", json={"public_token": "public-sandbox-xyz", "institution_name": "Capital One",
+                                           "import_since": (t - timedelta(days=175)).isoformat()}, headers=H)
+    st = user.get("/api/plaid/status").json()
+    chk = [a for a in st["items"][0]["accounts"] if a["name"] == "360 Checking"][0]
+    user.put(f"/api/plaid/accounts/{chk['id']}", json={"map_kind": "account", "create": True}, headers=H)
+    acct = [a for a in user.get("/api/accounts").json() if a["name"] == "360 Checking"][0]["id"]
+
+    def month(n, day):   # the given day, n months ago
+        y, m = t.year, t.month - n
+        while m < 1:
+            m += 12; y -= 1
+        import calendar as _c
+        return date(y, m, min(day, _c.monthrange(y, m)[1]))
+    from datetime import date
+    # a 'varies' phone bill (payee differs from the bill name) and a fixed electric bill due on the 10th
+    user.post("/api/bills", json={"name": "Cellphone", "amount_cents": 4000, "account_id": acct, "recurrence": "monthly",
+                                  "start_date": month(4, 10).isoformat(), "amount_mode": "varies", "match_name": "t mobile"}, headers=H)
+    user.post("/api/bills", json={"name": "PSEG", "amount_cents": 13800, "account_id": acct, "recurrence": "monthly",
+                                  "start_date": month(4, 10).isoformat()}, headers=H)
+    added = []
+    for n in (3, 2, 1):
+        added += [txn(f"tm{n}", "acc-chk", 0, 40 + n * 3.5, "T-MOBILE *AUTOPAY", "RENT_AND_UTILITIES", base=month(n, 10)),
+                  # PSEG is always charged 2 days late, and the last one costs more than expected
+                  txn(f"ps{n}", "acc-chk", 0, 138.0 if n > 1 else 162.0, "PSEG LONG ISLAND", "RENT_AND_UTILITIES", base=month(n, 12)),
+                  # Netflix isn't a bill yet
+                  txn(f"nf{n}", "acc-chk", 0, 15.49, "NETFLIX.COM", "ENTERTAINMENT", base=month(n, 5))]
+    added.append(txn("nf0", "acc-chk", 0, 15.49, "NETFLIX.COM", "ENTERTAINMENT", base=month(0, 5) if month(0, 5) <= t else month(4, 5)))
+    fake.pages = [{"added": added, "modified": [], "removed": [], "next_cursor": "a1", "has_more": False}]
+    user.post("/api/plaid/sync", headers=H)
+
+    bills = {b["name"]: b for b in user.get("/api/bills").json()}
+    assert bills["Cellphone"]["amount_cents"] == 4350                       # varies: follows the latest charge
+    assert any("Cellphone now expected" in n["title"] for n in user.get("/api/me/notifications").json())
+    sugg = user.get("/api/bills/suggestions").json()
+    kinds = {s["kind"]: s for s in sugg}
+    assert kinds["amount"]["payload"]["to"] == 16200                        # PSEG price change -> suggestion only
+    assert bills["PSEG"]["amount_cents"] == 13800                            # fixed bills never change by themselves
+    assert kinds["due_day"]["payload"] == {"name": "PSEG", "from": 10, "to": 12}
+    nb = kinds["new_bill"]["payload"]
+    assert nb["name"] == "Netflix" and nb["recurrence"] == "monthly" and nb["amount_cents"] == 1549
+    # accept all three
+    for s in sugg:
+        assert user.post(f"/api/bills/suggestions/{s['id']}/accept", headers=H).status_code == 200
+    bills = {b["name"]: b for b in user.get("/api/bills").json()}
+    assert bills["PSEG"]["amount_cents"] == 16200 and bills["PSEG"]["start_date"].endswith("-12")
+    assert bills["Netflix"]["recurrence"] == "monthly" and bills["Netflix"]["account_id"] == acct
+    assert user.get("/api/bills/suggestions").json() == []
+    # dismissed / accepted suggestions don't come back; another user never sees them
+    assert user.post("/api/bills/suggestions/scan", headers=H).json()["new"] == 0
+    mkuser("other5")
+    assert login("other5").get("/api/bills/suggestions").json() == []

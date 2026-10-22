@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.6.0 - 2026-10-17
+### Added
+- **Bill autopilot** (learns from linked-bank charges; runs inside each user's own scope after every sync):
+  - Name-aware matching: a charge pays a bill if the amount matches (2% / $1) or the payee contains the bill's words
+    (new per-bill **Bank charge name contains**), within ±5 days.
+  - New per-bill **Amount: Same every time / Varies**. Varies: expected amount follows the latest bank charge
+    automatically, with an Alerts note. Fixed: a different charge creates an *update amount* suggestion.
+  - *Move due day* suggestion when the last 3 bank payments all landed the same number of days off.
+  - *Add as bill* suggestions for repeating bank charges (weekly, biweekly, monthly, quarterly) that aren't bills
+    yet, with name, amount, account, schedule, next date and fixed/varies pre-filled.
+  - Suggestions card on Bills (Add bill / Move it / Update / Dismiss) and a Home "Needs attention" item. Dismissed
+    or accepted suggestions are never repeated. API: `GET /api/bills/suggestions`, `POST …/{id}/accept|dismiss`,
+    `POST /api/bills/suggestions/scan`.
+- Test: three months of simulated bank history covering all of the above, plus per-user isolation.
+### Fixed
+- A reminder test depended on the day of the month.
+
 ## 3.5.3 - 2026-10-17
 ### Fixed
 - **GitHub CI "test-and-audit" failed** (4 key-storage tests). `keys.clear_runtime()` (used by

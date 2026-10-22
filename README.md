@@ -4,7 +4,7 @@ Self-hosted bill, paycheck, savings and investment tracker built around the **we
 roles, two-factor sign-in, alerts by email and phone push, and encryption at every layer: the database on disk,
 secrets inside it, and every byte of browser traffic.
 
-![version](https://img.shields.io/badge/version-3.5.3-blue)
+![version](https://img.shields.io/badge/version-3.6.0-blue)
 
 ## Features
 
@@ -280,6 +280,18 @@ What syncs (every 6 hours by default, or **Sync now**):
 | Pending transactions | Wait until they post |
 | A transaction the bank later removes | What it created is removed too |
 
+### Bill autopilot (with a linked bank)
+- **Name matching:** a charge counts as a bill payment if the amount matches *or* the payee contains the bill's
+  words (e.g. bill "PSEG" ↔ "PSEG LONG ISLAND"). For a payee that looks different, set **Bank charge name contains**
+  on the bill (e.g. Cellphone → `t-mobile`).
+- **Amount: Varies** bills follow the bank: after each matched charge the expected amount becomes the latest
+  charge, and you get a note in Alerts. **Same every time** bills never change by themselves; a different charge
+  becomes a suggestion instead.
+- **Suggestions** (top of the Bills page, and on Home): *Update the amount* when a fixed bill's price changed;
+  *Move the due day* when the last three charges all landed on another day; *Add as a bill* for charges that repeat
+  weekly / every 2 weeks / monthly / quarterly but aren't bills yet (name, amount, account, schedule and next date
+  filled in). One click to accept; dismissed suggestions never come back.
+
 If a bank asks you to sign in again, the link shows **Sign-in needed**, admins get an alert, and **Reconnect**
 fixes it without losing anything. **Disconnect** revokes Plaid's access and deletes the tokens; imported spending
 stays. Some banks need extra steps in the Plaid dashboard the first time (their OAuth checklist); Plaid's
@@ -333,7 +345,7 @@ export BT_DB_KEY=$(python -c 'import secrets;print(secrets.token_hex(32))') BT_C
 python -m app.manage adduser dev admin
 uvicorn app.main:app --reload --port 8080
 npm i --no-save eslint@9 globals@15 && npx eslint static/js static/sw.js   # frontend: undefined names etc.
-python -m pytest -q        # 51 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
+python -m pytest -q        # 52 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
 pip-audit -r requirements.txt
 ```
 

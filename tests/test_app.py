@@ -431,7 +431,7 @@ def test_reminders_on_calendar(user):
     d23 = t.replace(day=23)
     user.post("/api/reminders", json={"title": "Dentist", "next_at": f"{d23}T15:30"}, headers=H)
     user.post("/api/reminders", json={"title": "Weekly check", "next_at": f"{t}T08:00", "recurrence": "weekly"}, headers=H)
-    occ = user.get(f"/api/reminders/occurrences?start={t.replace(day=1)}&end={t.replace(day=28)}").json()
+    occ = user.get(f"/api/reminders/occurrences?start={t.replace(day=1)}&end={max(t.replace(day=28), t + timedelta(days=14))}").json()
     assert any(o["title"] == "Dentist" and o["date"] == d23.isoformat() and o["time"] == "15:30" for o in occ)
     assert sum(o["title"] == "Weekly check" for o in occ) >= 2
     mkuser("v9", "user")

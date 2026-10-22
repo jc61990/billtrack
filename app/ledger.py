@@ -71,7 +71,8 @@ def bill_occurrences(con, lo: date, hi: date, include_skipped=False):
                 "category": b["category"] or "Uncategorized", "autopay": bool(b["autopay"]), "status": status,
                 "payment_id": p["id"] if p else None, "paid_on": p["paid_on"] if p else None,
                 "paid_source": p.get("source") if p else None,
-                "remind_days": b["remind_days"]})
+                "remind_days": b["remind_days"], "amount_mode": b.get("amount_mode", "fixed"),
+                "match_name": b.get("match_name", ""), "bill_amount_cents": b["amount_cents"]})
     return sorted(out, key=lambda x: (x["date"], x["name"].lower()))
 
 

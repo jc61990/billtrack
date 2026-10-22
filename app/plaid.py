@@ -166,17 +166,23 @@ def _pretty(primary: str) -> str:
     return primary.replace("_", " ").title().replace(" And ", " & ")[:60] if primary else "Uncategorized"
 
 
-def _match_bill(con, account_id, d: date, amount: int):
-    """An unpaid bill occurrence on this account (or no account), due within ±BILL_DAYS, amount within 2% / $1."""
+def _match_bill(con, account_id, d: date, amount: int, payee: str = ""):
+    """An unpaid bill occurrence on this account (or no account), due within ±BILL_DAYS, whose amount matches
+    (2% / $1) or whose name matches the payee ('varies' bills, or a fixed bill whose price changed)."""
+    from .autopilot import name_matches
     best = None
     for b in ledger.bill_occurrences(con, d - timedelta(days=BILL_DAYS), d + timedelta(days=BILL_DAYS)):
         if b["status"] in ("paid", "skipped") or (b["account_id"] not in (None, account_id)):
             continue
         tol = max(100, round(b["amount_cents"] * 0.02))
-        if abs(b["amount_cents"] - amount) <= tol:
-            dist = abs((date.fromisoformat(b["date"]) - d).days) + (0 if b["account_id"] == account_id else 2)
-            if best is None or dist < best[0]:
-                best = (dist, b)
+        amount_ok = abs(b["amount_cents"] - amount) <= tol
+        name_ok = bool(payee) and name_matches(b, payee)
+        if not amount_ok and not (name_ok and b["amount_cents"] / 3 <= amount <= b["amount_cents"] * 3):
+            continue
+        dist = (abs((date.fromisoformat(b["date"]) - d).days) + (0 if b["account_id"] == account_id else 2)
+                + (0 if amount_ok else 3) - (2 if name_ok else 0))
+        if best is None or dist < best[0]:
+            best = (dist, b)
     return best[1] if best else None
 
 
@@ -206,12 +212,15 @@ def _apply_txn(con, t, pa, since: str) -> str:
     acct_id = pa["map_id"]
     if d.isoformat() >= since and pa["map_kind"] == "account":
         if amt > 0 and detailed not in SKIP_DETAILED and primary not in SKIP_OUT:
-            bill = _match_bill(con, acct_id, d, amt)
+            bill = _match_bill(con, acct_id, d, amt, name)
             if bill:
                 cur = con.execute("""INSERT INTO payments(bill_id,due_date,paid_on,amount_cents,source,owner_id) VALUES (?,?,?,?,'bank',?)
                                      ON CONFLICT(bill_id,due_date) DO NOTHING""",
                                   (bill["bill_id"], bill["orig_date"], d.isoformat(), amt, owner()))
                 pay_id, out = cur.lastrowid if cur.rowcount else None, f"bill:{bill['name']}"
+                if pay_id:
+                    from . import autopilot
+                    autopilot.after_bank_payment(con, bill["bill_id"])
             else:
                 cur = con.execute("INSERT INTO expenses(date,name,amount_cents,account_id,category,source,owner_id) "
                                   "VALUES (?,?,?,?,?,'bank',?)", (d.isoformat(), name, amt, acct_id, _pretty(primary), owner()))
@@ -286,7 +295,8 @@ def sync_item(local_id: int) -> dict:
             con.execute("UPDATE plaid_items SET cursor=?, last_sync=?, status='ok', error='' WHERE id=? AND owner_id=?",
                         (c, now(), local_id, owner()))
             ledger.snapshot_networth(con)
-            from . import notify
+            from . import autopilot, notify
+            stats["suggestions"] = autopilot.scan_recurring(con)
             notify.account_alerts(con)
     except PlaidError as e:
         status = "login_required" if e.code in ("ITEM_LOGIN_REQUIRED", "PENDING_EXPIRATION", "PENDING_DISCONNECT") else "error"

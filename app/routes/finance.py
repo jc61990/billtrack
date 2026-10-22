@@ -43,6 +43,8 @@ class BillIn(In):
     category: Short = ""
     notes: Note = ""
     active: bool = True
+    amount_mode: Literal["fixed", "varies"] = "fixed"   # varies: expected amount follows bank charges
+    match_name: Short = ""                               # words to find in bank payees ("" = use the bill name)
 
     @model_validator(mode="after")
     def _ends(self):
@@ -169,6 +171,44 @@ def networth(p: Principal = Depends(require(R))):
 def networth_history(days: Annotated[int, Query(ge=7, le=3650)] = 365, p: Principal = Depends(require(R))):
     with db.tx() as con:
         return ledger.networth_history(con, days, p.perms)
+
+
+# ---------- bill autopilot suggestions ----------
+@r.get("/bills/suggestions")
+def bill_suggestions(p: Principal = Depends(require(R))):
+    import json as _j
+    with db.tx() as con:
+        out = db.rows(con, "SELECT id, kind, bill_id, payload, created_at FROM bill_suggestions WHERE owner_id=? "
+                           "AND status='open' ORDER BY id DESC LIMIT 50", (owner(),))
+    for x in out:
+        x["payload"] = _j.loads(x["payload"])
+    return out
+
+
+@r.post("/bills/suggestions/{sid}/accept")
+def accept_suggestion(sid: int, request: Request, p: Principal = Depends(require(W))):
+    from .. import autopilot
+    with db.tx() as con:
+        s = con.execute("SELECT * FROM bill_suggestions WHERE id=? AND owner_id=? AND status='open'", (sid, owner())).fetchone()
+        if not s:
+            raise HTTPException(404, "Not found")
+        autopilot.apply(con, dict(s))
+        audit(con, request, f"bill suggestion accepted ({s['kind']})", sid)
+    return {"ok": True}
+
+
+@r.post("/bills/suggestions/{sid}/dismiss")
+def dismiss_suggestion(sid: int, p: Principal = Depends(require(W))):
+    with db.tx() as con:
+        con.execute("UPDATE bill_suggestions SET status='dismissed' WHERE id=? AND owner_id=?", (sid, owner()))
+    return {"ok": True}
+
+
+@r.post("/bills/suggestions/scan")
+def scan_suggestions(p: Principal = Depends(require(W))):
+    from .. import autopilot
+    with db.tx() as con:
+        return {"new": autopilot.scan_recurring(con)}
 
 
 @r.get("/accounts/overview")

@@ -35,6 +35,8 @@ def home(p: Principal = Depends(require("finance:read"))):
                                               if b["date"] >= t.isoformat() and b["status"] != "paid")
             pays = [x for x in ledger.pay_occurrences(con, t, t + timedelta(days=14)) if not x["received"]]
             out["next_pay"] = pays[0] if pays else None
+            out["bill_suggestions"] = con.execute("SELECT count(*) FROM bill_suggestions WHERE owner_id=? AND status='open'",
+                                                  (p.user_id,)).fetchone()[0]
             a = ledger.accounts_view(con)
             out["accounts"] = {
                 "cash_cents": a["cash_cents"], "projected_cash_cents": a["projected_cash_cents"], "week_end": a["week_end"],

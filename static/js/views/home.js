@@ -35,6 +35,7 @@ function attention(h) {
   for (const c of h.accounts?.cards_over || []) items.push(["warn", `${c.name} is ${Math.round(c.utilization * 100)}% utilized`, `alert at ${c.util_alert_pct}%`, "accounts"]);
   const when = (ts) => { const d = new Date(ts), t = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
     return d.toDateString() === new Date().toDateString() ? `today ${t}` : d.toLocaleDateString(undefined, { month: "short", day: "numeric" }); };
+  if (h.bill_suggestions) items.push(["info", `${h.bill_suggestions} bill suggestion${h.bill_suggestions > 1 ? "s" : ""} from your bank`, "Review", "bills"]);
   for (const n of (h.alerts || []).slice(0, 3)) items.push([n.level === "warn" ? "warn" : "info", n.title, when(n.ts), "alerts"]);
   if (h.unread > 3) items.push(["info", `${h.unread - 3} more unread alerts`, "Open", "alerts"]);
   if (!items.length) return el("section", { class: "card ok-strip" }, "✓ All caught up. Nothing overdue, no low balances, no unread alerts.");

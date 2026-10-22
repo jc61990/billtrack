@@ -125,6 +125,9 @@ CREATE TABLE IF NOT EXISTS plaid_txns (
   date TEXT NOT NULL, name TEXT NOT NULL, amount_cents INTEGER NOT NULL, category TEXT NOT NULL DEFAULT '',
   outcome TEXT NOT NULL DEFAULT '', expense_id INTEGER, payment_id INTEGER, received_id INTEGER, seen_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS bill_suggestions (
+  id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL, kind TEXT NOT NULL, bill_id INTEGER, key TEXT NOT NULL,
+  payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', created_at TEXT NOT NULL, UNIQUE(owner_id, key));
 CREATE TABLE IF NOT EXISTS invite_codes (
   id INTEGER PRIMARY KEY, code_hash TEXT UNIQUE NOT NULL, code_enc TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
   created_by INTEGER, created_at TEXT NOT NULL, expires_at TEXT, max_uses INTEGER NOT NULL DEFAULT 1,
@@ -181,6 +184,9 @@ ADD_COLUMNS = [
     ("users", "registered_at", "TEXT"),
     ("users", "approved_by", "INTEGER"),
     ("users", "ics_token_hash", "TEXT"),
+    # v3.6 bill autopilot
+    ("bills", "amount_mode", "TEXT NOT NULL DEFAULT 'fixed'"),
+    ("bills", "match_name", "TEXT NOT NULL DEFAULT ''"),
 ] + [(t, "owner_id", "INTEGER") for t in (
     "accounts", "bills", "payments", "income_sources", "income_received", "income_extra", "expenses",
     "occurrence_overrides", "trackers", "tracker_entries", "inv_accounts", "holdings", "inv_snapshots",
