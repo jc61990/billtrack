@@ -20,6 +20,7 @@ class FakePlaid:
              "balances": {"current": 15234.10}},
         ]
         self.pages, self.calls, self.fail = [], [], None
+        self.inv_error, self.holdings, self.securities = None, [], []
 
     def __call__(self, path, body):
         self.calls.append(path)
@@ -37,6 +38,10 @@ class FakePlaid:
             return {"added": [], "modified": [], "removed": [], "next_cursor": body["cursor"], "has_more": False}
         if path == "/item/remove":
             return {}
+        if path == "/investments/holdings/get":
+            if self.inv_error:
+                raise plaid.PlaidError(self.inv_error, "")
+            return {"holdings": self.holdings, "securities": self.securities}
         raise AssertionError(path)
 
 
@@ -193,3 +198,37 @@ def test_bill_autopilot(user, fake):
     assert user.post("/api/bills/suggestions/scan", headers=H).json()["new"] == 0
     mkuser("other5")
     assert login("other5").get("/api/bills/suggestions").json() == []
+
+
+
+def test_positions_from_bank(user, fake):
+    user.post("/api/plaid/exchange", json={"public_token": "public-sandbox-xyz", "institution_name": "Schwab"}, headers=H)
+    st = user.get("/api/plaid/status").json()
+    brk = [a for a in st["items"][0]["accounts"] if a["name"] == "Schwab One"][0]
+    user.put(f"/api/plaid/accounts/{brk['id']}", json={"map_kind": "investment", "create": True}, headers=H)
+    inv_id = [a for a in user.get("/api/investments/accounts").json() if a["name"] == "Schwab One"][0]["id"]
+    # a manual holding in the same account stays untouched
+    user.post("/api/investments/holdings", json={"inv_account_id": inv_id, "symbol": "MYOWN", "quantity": 1, "price_cents": 100}, headers=H)
+    fake.securities = [{"security_id": "s-vti", "ticker_symbol": "VTI", "name": "Vanguard Total Stock Market ETF", "type": "etf"},
+                       {"security_id": "s-aapl", "ticker_symbol": "AAPL", "name": "Apple Inc.", "type": "equity"},
+                       {"security_id": "s-cash", "ticker_symbol": "CUR:USD", "name": "U.S. Dollar", "type": "cash", "is_cash_equivalent": True}]
+    fake.holdings = [{"account_id": "acc-brk", "security_id": "s-vti", "quantity": 42.5, "institution_price": 301.25, "cost_basis": 9500.00},
+                     {"account_id": "acc-brk", "security_id": "s-aapl", "quantity": 10, "institution_price": 230.10, "cost_basis": 1800.00},
+                     {"account_id": "acc-brk", "security_id": "s-cash", "quantity": 812.4, "institution_value": 812.40}]
+    r = list(user.post("/api/plaid/sync", headers=H).json().values())[0]
+    assert r["positions"] == 2
+    inv = [a for a in user.get("/api/investments").json()["accounts"] if a["id"] == inv_id][0]
+    h = {x["symbol"]: x for x in inv["holdings"]}
+    assert h["VTI"]["quantity"] == 42.5 and h["VTI"]["price_cents"] == 30125 and h["VTI"]["cost_basis_cents"] == 950000
+    assert h["VTI"]["source"] == "bank" and h["MYOWN"]["source"] == "manual" and inv["cash_cents"] == 81240
+    # sold AAPL: removed on next sync; VTI updated
+    fake.holdings = fake.holdings[:1]; fake.holdings[0]["quantity"] = 50
+    user.post("/api/plaid/sync", headers=H)
+    h = {x["symbol"]: x for x in [a for a in user.get("/api/investments").json()["accounts"] if a["id"] == inv_id][0]["holdings"]}
+    assert set(h) == {"VTI", "MYOWN"} and h["VTI"]["quantity"] == 50
+    # bank didn't grant investments: clear message, balances still sync, nothing deleted
+    fake.inv_error = "ADDITIONAL_CONSENT_REQUIRED"
+    r = list(user.post("/api/plaid/sync", headers=H).json().values())[0]
+    assert r["positions_error"] == "ADDITIONAL_CONSENT_REQUIRED" and "error" not in r
+    assert "Reconnect" in user.get("/api/plaid/status").json()["items"][0]["positions_status"]
+    assert user.post("/api/plaid/link-token", json={"item": st["items"][0]["id"], "add_investments": True}, headers=H).status_code == 200

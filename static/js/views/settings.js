@@ -126,9 +126,11 @@ async function setup2fa() {
   const err = el("p", { class: "err", role: "alert" });
   const go = el("button", { type: "submit", class: "primary" }, "Turn on");
   const form = showDialog("Set up two-factor", el("div", { class: "stack" },
-    el("p", {}, "1. In your authenticator app, add an account. On this phone you can tap the link; otherwise type the key."),
-    el("a", { href: s.uri, class: "btn" }, "Open in authenticator app"),
-    el("p", {}, "Setup key:"), el("code", { class: "secret" }, s.secret.match(/.{1,4}/g).join(" ")),
+    el("p", {}, "1. Scan this with your authenticator app (Google Authenticator, Microsoft Authenticator, Authy, 1Password…)."),
+    el("img", { src: s.qr, alt: "QR code for your authenticator app", class: "qr", width: 220, height: 220 }),
+    el("details", {}, el("summary", { class: "muted small" }, "Can't scan? Use the link or type the key"),
+      el("a", { href: s.uri, class: "btn" }, "Open in authenticator app (this device)"),
+      el("p", {}, "Setup key:"), el("code", { class: "secret" }, s.secret.match(/.{1,4}/g).join(" "))),
     el("label", {}, "2. Enter the 6-digit code it shows", code), err), [go]);
   form.onsubmit = async (e) => {
     e.preventDefault();

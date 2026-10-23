@@ -23,7 +23,7 @@ def _err(e: plaid.PlaidError):
 @r.get("/status")
 def status(p: Principal = Admin):
     with tx() as con:
-        items = rows(con, "SELECT id, institution_name, institution_id, status, error, last_sync, created_at, import_since "
+        items = rows(con, "SELECT id, institution_name, institution_id, status, error, last_sync, created_at, import_since, positions_status "
                           "FROM plaid_items WHERE owner_id=? ORDER BY institution_name", (owner(),))
         accts = rows(con, "SELECT id, item_id, name, official_name, mask, type, subtype, map_kind, map_id, "
                           "current_cents, available_cents, limit_cents, updated_at FROM plaid_accounts WHERE owner_id=? ORDER BY name", (owner(),))
@@ -40,6 +40,7 @@ def status(p: Principal = Admin):
 
 class LinkIn(In):
     item: int | None = None     # set = reconnect (update mode)
+    add_investments: bool = False   # with item: also ask the bank to share positions
 
 
 @r.post("/link-token")
@@ -51,7 +52,7 @@ def link_token(body: LinkIn, p: Principal = Admin):
         if not item:
             raise HTTPException(404, "Not found")
     try:
-        return {"link_token": plaid.link_token(p.user_id, item)}
+        return {"link_token": plaid.link_token(p.user_id, item, body.add_investments)}
     except plaid.PlaidError as e:
         _err(e)
 

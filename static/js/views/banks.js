@@ -43,6 +43,9 @@ export async function render(root) {
           el("td", { class: "r" }, pa.current_cents === null ? "—" : money(pa.current_cents)),
           el("td", {}, opts(pa)),
           el("td", { class: "small" }, pa.stats?.n ? `${pa.stats.expenses || 0} spending · ${pa.stats.bills || 0} bills paid · ${pa.stats.pays || 0} paychecks` : "—"))))),
+      it.accounts.some((a) => a.map_kind === "investment") ? el("p", { class: "meta" }, "Positions: ", it.positions_status || "not synced yet",
+        /reconnect|allow/i.test(it.positions_status || "") || !it.positions_status
+          ? el("button", { type: "button", class: "link", onclick: () => { location.href = `/connect.html?item=${it.id}&add=investments`; } }, " Allow positions…") : null) : null,
       el("label", {}, "Import spending and paychecks from", since),
       el("div", { class: "actions left" },
         el("button", { type: "button", class: "primary", onclick: async (e) => {

@@ -671,3 +671,11 @@ def test_extend_session(user):
     stale = TestClient(app); stale.cookies.set("bt_session", old_cookie)
     assert stale.get("/api/me").status_code == 401                     # old token is dead
     assert TestClient(app).post("/api/me/session/extend", headers=H).status_code == 401   # needs a live session
+
+
+def test_2fa_setup_has_qr(user):
+    s = user.post("/api/me/2fa/setup", headers=H).json()
+    assert s["qr"].startswith("data:image/svg+xml;base64,")
+    import base64 as _b
+    svg = _b.b64decode(s["qr"].split(",", 1)[1]).decode()
+    assert svg.lstrip().startswith("<svg") and "<script" not in svg

@@ -187,6 +187,10 @@ ADD_COLUMNS = [
     # v3.6 bill autopilot
     ("bills", "amount_mode", "TEXT NOT NULL DEFAULT 'fixed'"),
     ("bills", "match_name", "TEXT NOT NULL DEFAULT ''"),
+    # v3.7 positions from the bank
+    ("holdings", "source", "TEXT NOT NULL DEFAULT 'manual'"),
+    ("holdings", "plaid_security_id", "TEXT"),
+    ("plaid_items", "positions_status", "TEXT NOT NULL DEFAULT ''"),
 ] + [(t, "owner_id", "INTEGER") for t in (
     "accounts", "bills", "payments", "income_sources", "income_received", "income_extra", "expenses",
     "occurrence_overrides", "trackers", "tracker_entries", "inv_accounts", "holdings", "inv_snapshots",

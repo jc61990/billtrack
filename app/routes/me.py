@@ -183,7 +183,18 @@ def totp_setup(request: Request, p: Principal = SelfSession):
             raise HTTPException(409, "Two-factor is already on. Turn it off first to re-enroll.")
         secret = totp.new_secret()
         con.execute("UPDATE users SET totp_secret_enc=? WHERE id=?", (crypto.seal(secret, f"totp:{p.user_id}"), p.user_id))
-    return {"secret": secret, "uri": totp.uri(secret, u["username"])}
+    uri = totp.uri(secret, u["username"])
+    return {"secret": secret, "uri": uri, "qr": _qr_data_uri(uri)}
+
+
+def _qr_data_uri(text: str) -> str:
+    """QR code as an SVG data: URI (shown in an <img>, so nothing is injected into the page)."""
+    import base64
+    import io
+    import segno
+    buf = io.BytesIO()
+    segno.make(text, error="m").save(buf, kind="svg", scale=6, border=2, dark="#000000", light="#ffffff", xmldecl=False)
+    return "data:image/svg+xml;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
 class CodeIn(In):

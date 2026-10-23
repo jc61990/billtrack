@@ -4,7 +4,7 @@ Self-hosted bill, paycheck, savings and investment tracker built around the **we
 roles, two-factor sign-in, alerts by email and phone push, and encryption at every layer: the database on disk,
 secrets inside it, and every byte of browser traffic.
 
-![version](https://img.shields.io/badge/version-3.6.0-blue)
+![version](https://img.shields.io/badge/version-3.7.0-blue)
 
 ## Features
 
@@ -280,6 +280,14 @@ What syncs (every 6 hours by default, or **Sync now**):
 | Pending transactions | Wait until they post |
 | A transaction the bank later removes | What it created is removed too |
 
+### Investment positions (with a linked brokerage)
+New bank links ask the bank to share investments where it can (Plaid *Investments*, enabled only for institutions
+that support it). Each sync then fills the mapped BillTrack investment account with the bank's **positions**
+(ticker, shares, price, cost basis) and its **cash**, adds new ones, updates changed ones and removes sold ones.
+Bank positions show a **Bank** tag and aren't editable; anything you added by hand is left alone. A link made
+before 3.7 shows *Positions: … Allow positions…* on Bank links: press it and sign in to the bank once more to grant
+it. Plaid may bill Investments separately from Transactions; check your Plaid plan.
+
 ### Bill autopilot (with a linked bank)
 - **Name matching:** a charge counts as a bill payment if the amount matches *or* the payee contains the bill's
   words (e.g. bill "PSEG" ↔ "PSEG LONG ISLAND"). For a payee that looks different, set **Bank charge name contains**
@@ -345,7 +353,7 @@ export BT_DB_KEY=$(python -c 'import secrets;print(secrets.token_hex(32))') BT_C
 python -m app.manage adduser dev admin
 uvicorn app.main:app --reload --port 8080
 npm i --no-save eslint@9 globals@15 && npx eslint static/js static/sw.js   # frontend: undefined names etc.
-python -m pytest -q        # 52 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
+python -m pytest -q        # 54 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
 pip-audit -r requirements.txt
 ```
 

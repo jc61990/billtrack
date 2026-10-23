@@ -351,3 +351,4 @@ code.big-code { font-size: 1.25rem; text-align: center; letter-spacing: 0.06em; 
 .session-bar .msg { font-weight: 600; font-variant-numeric: tabular-nums; }
 .card.suggest { border-color: var(--focus); }
 .card.suggest .list li { align-items: flex-start; }
+img.qr { display: block; margin: 0.4rem auto 0.8rem; background: #fff; padding: 8px; border-radius: 10px; image-rendering: pixelated; }

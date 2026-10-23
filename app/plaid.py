@@ -5,6 +5,7 @@ hosts are ever contacted, over verified TLS. Access tokens are AES-GCM sealed in
 and never leave the server. Read-only: BillTrack only requests the Transactions product."""
 import json
 import logging
+import re
 import ssl
 import urllib.error
 import urllib.request
@@ -68,13 +69,15 @@ def now() -> str:
 
 
 # ---------- link ----------
-def link_token(user_id: int, item=None) -> str:
+def link_token(user_id: int, item=None, add_investments: bool = False) -> str:
     body = {"client_name": "BillTrack", "user": {"client_user_id": f"bt-{user_id}"}, "country_codes": ["US"],
             "language": "en"}
-    if item:   # update mode: re-authenticate an existing connection
+    if item:   # update mode: re-authenticate, and optionally grant investments on an existing link
         body["access_token"] = _token(item)
-    else:
-        body.update(products=["transactions"], transactions={"days_requested": 180})
+        if add_investments:
+            body["additional_consented_products"] = ["investments"]
+    else:      # investments are turned on where the bank supports them (brokerages); banks just skip it
+        body.update(products=["transactions"], optional_products=["investments"], transactions={"days_requested": 180})
     return call("/link/token/create", body)["link_token"]
 
 
@@ -155,6 +158,71 @@ def _apply_balances(con, local_id):
         con.execute(f"UPDATE accounts SET {','.join(f'{k}=?' for k in upd)} WHERE id=? AND owner_id=?",
                     (*upd.values(), acct["id"], owner()))
         ledger.record_balance(con, acct["id"], pa["current_cents"])
+
+
+CASH_TICKERS = {"CUR:USD", "USD", "CASH"}
+
+
+def sync_positions(local_id: int) -> dict:
+    """Holdings for investment accounts mapped on this link -> BillTrack holdings (source='bank').
+    Manual holdings are never touched; bank holdings that disappear are removed."""
+    with tx() as con:
+        it = con.execute("SELECT * FROM plaid_items WHERE id=? AND owner_id=?", (local_id, owner())).fetchone()
+        mapped = {a["account_id"]: a["map_id"] for a in rows(
+            con, "SELECT account_id, map_id FROM plaid_accounts WHERE item_id=? AND owner_id=? AND map_kind='investment'",
+            (local_id, owner()))}
+    if not it or not mapped:
+        return {"positions": 0}
+    try:
+        r = call("/investments/holdings/get", {"access_token": _token(it)})
+    except PlaidError as e:
+        msg = {"ADDITIONAL_CONSENT_REQUIRED": "Reconnect this bank and allow investments to see positions",
+               "PRODUCTS_NOT_SUPPORTED": "This bank doesn't share positions through Plaid",
+               "NO_INVESTMENT_ACCOUNTS": "No investment accounts on this link",
+               "PRODUCT_NOT_READY": "Positions are still being prepared; try Sync now in a few minutes",
+               "INVALID_PRODUCT": "Investments isn't enabled for your Plaid keys (check the Plaid dashboard)"}.get(e.code, f"{e.code}: {e.message}")
+        with tx() as con:
+            con.execute("UPDATE plaid_items SET positions_status=? WHERE id=? AND owner_id=?", (msg[:200], local_id, owner()))
+        return {"positions": 0, "positions_error": e.code}
+    secs = {s_["security_id"]: s_ for s_ in r.get("securities", [])}
+    seen, n = set(), 0
+    with tx() as con:
+        cash: dict = {}
+        for h in r.get("holdings", []):
+            inv = mapped.get(h.get("account_id"))
+            if not inv:
+                continue
+            sec = secs.get(h.get("security_id"), {})
+            tick = (sec.get("ticker_symbol") or "").upper()
+            if sec.get("is_cash_equivalent") and (tick in CASH_TICKERS or sec.get("type") == "cash"):
+                cash[inv] = cash.get(inv, 0) + (_cents(h.get("institution_value")) or 0)
+                continue
+            sym = re.sub(r"[^A-Za-z0-9.\-:/^ ]", "", tick or (sec.get("name") or "?"))[:20] or "?"
+            qty = float(h.get("quantity") or 0)
+            price = _cents(h.get("institution_price")) or _cents(sec.get("close_price")) or 0
+            basis = _cents(h.get("cost_basis")) or 0
+            sid = h.get("security_id") or sym
+            seen.add((inv, sid))
+            ex = con.execute("SELECT id FROM holdings WHERE inv_account_id=? AND plaid_security_id=? AND owner_id=?",
+                             (inv, sid, owner())).fetchone()
+            vals = (sym, (sec.get("name") or "")[:60], qty, basis, price, now())
+            if ex:
+                con.execute("UPDATE holdings SET symbol=?, name=?, quantity=?, cost_basis_cents=?, price_cents=?, price_updated=? "
+                            "WHERE id=?", (*vals, ex["id"]))
+            else:
+                con.execute("INSERT INTO holdings(symbol,name,quantity,cost_basis_cents,price_cents,price_updated,inv_account_id,"
+                            "source,plaid_security_id,owner_id) VALUES (?,?,?,?,?,?,?,'bank',?,?)", (*vals, inv, sid, owner()))
+            n += 1
+        for inv in set(mapped.values()):
+            for row in rows(con, "SELECT id, plaid_security_id FROM holdings WHERE inv_account_id=? AND owner_id=? AND source='bank'",
+                            (inv, owner())):
+                if (inv, row["plaid_security_id"]) not in seen:
+                    con.execute("DELETE FROM holdings WHERE id=?", (row["id"],))
+            con.execute("UPDATE inv_accounts SET cash_cents=? WHERE id=? AND owner_id=?", (cash.get(inv, 0), inv, owner()))
+        con.execute("UPDATE plaid_items SET positions_status=? WHERE id=? AND owner_id=?",
+                    (f"{n} positions synced", local_id, owner()))
+        ledger.snapshot_investments(con)
+    return {"positions": n}
 
 
 def _category(t) -> tuple[str, str]:
@@ -298,6 +366,7 @@ def sync_item(local_id: int) -> dict:
             from . import autopilot, notify
             stats["suggestions"] = autopilot.scan_recurring(con)
             notify.account_alerts(con)
+        stats.update(sync_positions(local_id))
     except PlaidError as e:
         status = "login_required" if e.code in ("ITEM_LOGIN_REQUIRED", "PENDING_EXPIRATION", "PENDING_DISCONNECT") else "error"
         _set_status(local_id, status, f"{e.code}: {e.message}")

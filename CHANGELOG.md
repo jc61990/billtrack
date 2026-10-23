@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.7.0 - 2026-10-17
+### Added
+- **2FA setup shows a QR code** (rendered server-side as an SVG `data:` image with `segno` 1.6.6, pure Python, no known
+  vulnerabilities; nothing is injected into the page). The key and tap-to-open link remain under "Can't scan?".
+- **Investment positions from linked brokerages** (Plaid Investments): new links request it as an optional product;
+  existing links get **Allow positions…** (update mode with `additional_consented_products`). Each sync upserts
+  holdings (symbol, name, shares, price, cost basis) into the mapped investment account with `source='bank'`,
+  sets its cash from cash-equivalent positions, removes positions no longer held, and never touches manual holdings.
+  Errors (consent needed, not supported, not ready, product not enabled) show as a clear status on Bank links and
+  don't stop balance or transaction syncing.
+- Investments page: bank positions are tagged **Bank** and read-only.
+- Tests: QR content, positions add/update/remove/cash, manual holdings untouched, consent-required path.
+### Security
+- `opentelemetry-api` 1.45.0 → **1.45.1** (CVE-2026-114603, published this month; pulled in by FastAPI). `pip-audit
+  --strict`: no known vulnerabilities.
+
 ## 3.6.0 - 2026-10-17
 ### Added
 - **Bill autopilot** (learns from linked-bank charges; runs inside each user's own scope after every sync):

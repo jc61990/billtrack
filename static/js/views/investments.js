@@ -8,14 +8,17 @@ export async function render(root) {
   const [inv, hist] = await Promise.all([api("GET", "/api/investments"), api("GET", "/api/investments/history?days=365")]);
   const accts = inv.accounts.map((a) => {
     const rows = a.holdings.map((h) => {
-      const tr = el("tr", { class: w ? "click" : "", tabindex: 0, onclick: () => w && holdingForm(a.id, h) },
-        el("td", {}, el("strong", {}, h.symbol), h.name ? el("div", { class: "meta" }, h.name) : null),
+      const fromBank = h.source === "bank";
+      const tr = el("tr", { class: w && !fromBank ? "click" : "", tabindex: 0,
+        onclick: () => (fromBank ? toast("This position comes from your bank and updates on each sync.") : w && holdingForm(a.id, h)) },
+        el("td", {}, el("strong", {}, h.symbol), fromBank ? el("span", { class: "tag bank" }, "Bank") : null,
+          h.name ? el("div", { class: "meta" }, h.name) : null),
         el("td", { class: "r" }, h.quantity.toLocaleString(undefined, { maximumFractionDigits: 6 })),
         el("td", { class: "r" }, money(h.price_cents)),
         el("td", { class: "r" }, money(h.value_cents)),
         el("td", { class: "r " + (h.gain_cents < 0 ? "out" : "in") }, money(h.gain_cents)));
-      onContext(tr, () => [w ? { label: "Edit / update price…", action: () => holdingForm(a.id, h) } : null,
-        w ? { label: "Delete", danger: true, action: () => api("DELETE", `/api/investments/holdings/${h.id}`).then(refresh) } : null,
+      onContext(tr, () => [w && !fromBank ? { label: "Edit / update price…", action: () => holdingForm(a.id, h) } : null,
+        w && !fromBank ? { label: "Delete", danger: true, action: () => api("DELETE", `/api/investments/holdings/${h.id}`).then(refresh) } : null,
         { label: `Price updated ${fmtTs(h.price_updated)}`, disabled: true, action: () => {} }]);
       return tr;
     });
@@ -37,7 +40,7 @@ export async function render(root) {
       ["Gain / loss", money(inv.gain_cents), inv.gain_cents < 0 ? "out" : "in",
         inv.cost_cents ? `${((inv.gain_cents / inv.cost_cents) * 100).toFixed(1)}%` : null]]),
     hist.length > 1 ? el("section", { class: "card" }, el("h2", {}, "Value over the last year"), lineChart(hist)) : null,
-    el("div", { class: "spread" }, el("p", { class: "muted" }, "Prices are entered by hand or pushed by a script using an API token (see Settings > API access)."),
+    el("div", { class: "spread" }, el("p", { class: "muted" }, "Linked brokerages (Bank links) fill in positions automatically. Add others by hand, or push prices with an API token."),
       w ? el("button", { type: "button", class: "primary", onclick: () => invAccountForm() }, "Add account") : null),
     inv.accounts.length ? accts : emptyState("No investment accounts yet.", w ? "Add one" : null, () => invAccountForm()),
     w && inv.accounts.length ? el("button", { type: "button", onclick: bulkPrices }, "Update prices") : null);
