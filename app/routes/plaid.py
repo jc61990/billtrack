@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import Field, StringConstraints
 
-from .. import ledger, plaid
+from .. import ledger, plaid, settings
 from ..db import rows, tx
 from ..scope import owner
 from ..security import Principal, audit, require
@@ -135,6 +135,39 @@ def set_since(iid: int, body: SinceIn, p: Principal = Admin):
     with tx() as con:
         con.execute("UPDATE plaid_items SET import_since=? WHERE id=? AND owner_id=?", (body.import_since.isoformat(), iid, owner()))
     return {"ok": True}
+
+
+_syncing: set = set()
+
+
+@r.post("/refresh-if-stale")
+def refresh_if_stale(p: Principal = Admin):
+    """Opening the app: if this user's bank data is over 30 minutes old, sync in the background (no waiting)."""
+    import threading
+    from datetime import datetime, timedelta, timezone
+    if not plaid.configured() or p.user_id in _syncing:
+        return {"started": False}
+    with tx() as con:
+        r_ = con.execute("SELECT min(coalesce(last_sync,'')) oldest, count(*) n FROM plaid_items WHERE owner_id=? "
+                         "AND status<>'login_required'", (owner(),)).fetchone()
+    if not r_["n"] or (r_["oldest"] and datetime.fromisoformat(r_["oldest"]) > datetime.now(timezone.utc) - timedelta(minutes=30)):
+        return {"started": False}
+    uid, tzname = p.user_id, settings.tz().key
+
+    def run():
+        from .. import scope as _scope
+        tok = settings.use_tz(tzname)
+        try:
+            with _scope.as_user(uid):
+                plaid.sync_all(False, only_owner=uid)
+        except Exception:
+            pass
+        finally:
+            settings.reset_tz(tok)
+            _syncing.discard(uid)
+    _syncing.add(uid)
+    threading.Thread(target=run, name=f"plaid-refresh-{uid}", daemon=True).start()
+    return {"started": True}
 
 
 @r.post("/sync")

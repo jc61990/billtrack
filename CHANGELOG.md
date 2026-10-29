@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.8.0 - 2026-10-23
+### Added
+- **Paycheck splits**: per paycheck, fixed amounts to other accounts; the main account gets the rest. Used by the
+  week view's per-account totals, projected end-of-week balances and Home.
+- **Income follows the bank**: deposits are matched by amount or by employer name (new *Deposit name contains*),
+  including split deposits after the first; all parts of a payday add up into one received payday and are kept per
+  account (`income_deposits`). *Follow them* (new per-paycheck setting) updates the amount, main account and splits
+  from the latest payday with an Alerts note; *Keep these numbers* creates an Income-page suggestion. Reversing a
+  deposit removes only its share.
+- **Balances update themselves**: background sync when the app opens if the last sync is >30 min old
+  (`POST /api/plaid/refresh-if-stale`, one at a time per user); default sync interval 6 h → **2 h** (existing
+  installs at the old default are moved too). Accounts page shows *🏦 From your bank* vs *updated by hand* with a
+  link to Bank links.
+- Forms support custom blocks (the split editor).
+- Tests: expected split per account; bank deposits split two ways adding up; learned new total and split; reversal
+  of one part; fixed-mode suggestion and accept; sync on open.
+
 ## 3.7.1 - 2026-10-23
 ### Changed
 - CI split into three clearly named jobs: **tests**, **security-audit** and **frontend-lint**, so a "Run failed"

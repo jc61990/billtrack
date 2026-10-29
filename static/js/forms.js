@@ -1,5 +1,5 @@
 // Entity forms shared by several views. Field names match the API models exactly (unknown fields are rejected).
-import { api, KIND_LABEL, openForm, REC, REC_LABEL, S } from "./core.js";
+import { api, el, KIND_LABEL, openForm, REC, REC_LABEL, S } from "./core.js";
 
 const recOpts = () => REC.map((r) => [r, REC_LABEL[r]]);
 export const acctOptions = () => [["", "No account"], ...S.accounts.map((a) => [a.id, a.name])];
@@ -32,15 +32,47 @@ export function sourceForm(s = {}) {
   openForm(s.id ? "Edit pay" : "Add pay", [
     { name: "name", label: "Name", value: s.name, required: true, placeholder: "Paycheck" },
     { name: "amount_cents", label: "Take-home per check", type: "money", value: s.amount_cents, required: true, pair: 1 },
-    { name: "account_id", label: "Deposits to", type: "select", int: 1, options: acctOptions(), value: s.account_id ?? "", pair: 1 },
+    { name: "account_id", label: "Main account (gets the rest)", type: "select", int: 1, options: acctOptions(), value: s.account_id ?? "", pair: 1 },
     { name: "start_date", label: "Next (or first) payday", type: "date", value: s.start_date || S.me.today, required: true, pair: 1 },
     { name: "recurrence", label: "Paid", type: "select", options: recOpts(), value: s.recurrence || "weekly", pair: 1 },
     { name: "hourly_rate_cents", label: "Hourly rate (for OT)", type: "money", value: s.hourly_rate_cents ?? 0, zero: 1, pair: 1 },
     { name: "ot_multiplier", label: "OT multiplier", type: "number", step: "0.05", min: 1, max: 4, value: s.ot_multiplier ?? 1.5, pair: 1 },
+    splitsField(s),
+    { name: "amount_mode", label: "When deposits come in from your bank", type: "select",
+      options: [["varies", "Follow them: update the amount and split automatically"], ["fixed", "Keep these numbers; suggest changes"]],
+      value: s.amount_mode || "fixed" },
+    { name: "match_name", label: "Deposit name contains (optional)", value: s.match_name, max: 60, placeholder: "e.g. acme payroll",
+      hint: "How your employer shows up on deposits; lets each split deposit be recognised." },
     { name: "end_date", label: "Stop after this date (optional)", type: "date", value: s.end_date, nullable: 1,
       hint: "Leave blank unless this pay is ending." },
     { name: "active", label: "Active", type: "check", value: s.id ? s.active : true },
   ], save("/api/income-sources", s.id), del("/api/income-sources", s.id));
+}
+
+// "Split to other accounts": fixed amounts each payday; whatever is left goes to the main account.
+function splitsField(s) {
+  let cur = [];
+  try { cur = typeof s.splits === "string" ? JSON.parse(s.splits || "[]") : (s.splits || []); } catch { cur = []; }
+  const rowsBox = el("div", { class: "stack" });
+  const addRow = (sp = {}) => {
+    const acct = el("select", { "aria-label": "Account" }, acctOptions().filter(([v]) => v !== "").map(([v, l]) =>
+      el("option", { value: v, selected: String(v) === String(sp.account_id) }, l)));
+    const amt = el("input", { inputmode: "decimal", placeholder: "0.00", value: sp.amount_cents ? (sp.amount_cents / 100).toFixed(2) : "", "aria-label": "Amount" });
+    const row = el("div", { class: "row2 split-row" }, acct, el("div", { class: "split-amt" }, amt,
+      el("button", { type: "button", class: "link", "aria-label": "Remove", onclick: () => row.remove() }, "✕")));
+    rowsBox.append(row);
+  };
+  cur.forEach(addRow);
+  const node = el("fieldset", {}, el("legend", {}, "Split to other accounts (optional)"),
+    el("p", { class: "hint" }, "e.g. $300 to Savings each payday. The main account gets whatever is left."), rowsBox,
+    el("button", { type: "button", onclick: () => addRow() }, "+ Add a split"));
+  return { name: "splits", type: "custom", node, get: () => [...rowsBox.querySelectorAll(".split-row")].map((r) => {
+    const v = r.querySelector("input").value.replace(/[$,\s]/g, "");
+    if (!v) return null;
+    const c = Math.round(Number(v) * 100);
+    if (!Number.isFinite(c) || c <= 0) throw new Error("Split amounts must be more than 0");
+    return { account_id: Number(r.querySelector("select").value), amount_cents: c };
+  }).filter(Boolean) };
 }
 
 export function extraForm(x = {}, presetDate) {

@@ -7,14 +7,15 @@ const usd = (c) => money(c);
 function suggestionText(s) {
   const p = s.payload;
   if (s.kind === "amount") return [`${p.name} was charged ${usd(p.to)}`, `Expected ${usd(p.from)}. Update the bill to ${usd(p.to)}?`];
+  if (s.kind === "pay") return [`${p.name}: latest paycheck was ${usd(p.to)}`, `${p.desc}. You expect ${usd(p.from)}. Use the new amount and split?`];
   if (s.kind === "due_day") return [`${p.name} is always charged on the ${ord(p.to)}`, `It's set for the ${ord(p.from)}. Move it?`];
   return [`Looks like a bill: ${p.name}`, `${usd(p.amount_cents)} ${REC_LABEL[p.recurrence].toLowerCase()}, seen ${p.seen} times`
     + `${p.amount_mode === "varies" ? " (amount varies)" : ""}. Next around ${fmtDay(p.start_date, { month: "short", day: "numeric" })}.`];
 }
 const ord = (n) => n + (["th", "st", "nd", "rd"][((n % 100) - 20) % 10] || ["th", "st", "nd", "rd"][n % 100] || "th");
 
-async function suggestionsCard() {
-  const list = await api("GET", "/api/bills/suggestions").catch(() => []);
+export async function suggestionsCard(kinds = ["amount", "due_day", "new_bill"]) {
+  const list = (await api("GET", "/api/bills/suggestions").catch(() => [])).filter((x) => kinds.includes(x.kind));
   if (!list.length || !can("finance:write")) return null;
   const act = (s, what) => api("POST", `/api/bills/suggestions/${s.id}/${what}`)
     .then(() => { toast(what === "accept" ? "Done" : "Dismissed"); refresh(); }).catch((e) => toast(e.message, true));
@@ -23,7 +24,7 @@ async function suggestionsCard() {
       const [title, sub] = suggestionText(s);
       return el("li", {}, el("span", {}, el("strong", {}, title), el("div", { class: "meta" }, sub)),
         el("span", { class: "actions left" },
-          el("button", { type: "button", class: "primary", onclick: () => act(s, "accept") }, s.kind === "new_bill" ? "Add bill" : s.kind === "due_day" ? "Move it" : "Update"),
+          el("button", { type: "button", class: "primary", onclick: () => act(s, "accept") }, s.kind === "new_bill" ? "Add bill" : s.kind === "due_day" ? "Move it" : s.kind === "pay" ? "Use it" : "Update"),
           el("button", { type: "button", onclick: () => act(s, "dismiss") }, "Dismiss")));
     })));
 }

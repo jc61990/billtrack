@@ -4,7 +4,7 @@ Self-hosted bill, paycheck, savings and investment tracker built around the **we
 roles, two-factor sign-in, alerts by email and phone push, and encryption at every layer: the database on disk,
 secrets inside it, and every byte of browser traffic.
 
-![version](https://img.shields.io/badge/version-3.7.1-blue)
+![version](https://img.shields.io/badge/version-3.8.0-blue)
 
 ## Features
 
@@ -292,6 +292,21 @@ What syncs (every 6 hours by default, or **Sync now**):
 | Pending transactions | Wait until they post |
 | A transaction the bank later removes | What it created is removed too |
 
+### Balances update themselves (linked accounts)
+Linked accounts sync every **2 hours** (Admin → System settings → Bank sync, 1-24 h) and also **whenever you open
+the app** if the last sync is over 30 minutes old (in the background; the page refreshes when it's done). The
+Accounts page marks each balance *🏦 From your bank* or *updated by hand* with a link to Bank links; hand-entered
+accounts can't update themselves.
+
+### Paychecks split across accounts
+On a paycheck (Income → Add pay / edit): the **main account** gets whatever is left after any **splits**
+("$300 to Savings"). The week view, per-account totals and projected balances use the split. With
+**When deposits come in from your bank → Follow them**, each payday's deposits (recognised by amount, or by
+**Deposit name contains**, e.g. `acme payroll`, so the smaller split deposits are found too) are added up, and the
+paycheck's amount, main account and splits update to match what actually arrived (with a note in Alerts). With
+**Keep these numbers**, you get a suggestion on the Income page instead. If the bank reverses one deposit, only
+that part is taken back off the payday.
+
 ### Investment positions (with a linked brokerage)
 New bank links ask the bank to share investments where it can (Plaid *Investments*, enabled only for institutions
 that support it). Each sync then fills the mapped BillTrack investment account with the bank's **positions**
@@ -365,7 +380,7 @@ export BT_DB_KEY=$(python -c 'import secrets;print(secrets.token_hex(32))') BT_C
 python -m app.manage adduser dev admin
 uvicorn app.main:app --reload --port 8080
 npm i --no-save eslint@9 globals@15 && npx eslint static/js static/sw.js   # frontend: undefined names etc.
-python -m pytest -q        # 54 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
+python -m pytest -q        # 56 tests incl. roles, 2FA, lockout, tokens, channel replay/tamper, encryption at rest
 pip-audit -r requirements.txt
 ```
 

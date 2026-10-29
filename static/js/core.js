@@ -109,6 +109,7 @@ export function confirmBox(title, text, okLabel = "Confirm", danger = true) {
 }
 
 function field(f) {
+  if (f.type === "custom") return f.node;   // caller-built block; value read back with f.get()
   const v = f.value ?? "";
   if (f.type === "check")
     return el("label", { class: "check" }, el("input", { type: "checkbox", name: f.name, checked: !!v }), f.label);
@@ -154,6 +155,10 @@ export function openForm(title, fields, onSave, onDelete, saveLabel = "Save") {
     for (const f of fields) {
       if (f.skip) continue;
       const n = form.elements[f.name];
+      if (f.type === "custom") {
+        try { out[f.name] = f.get(); } catch (x) { err.textContent = x.message; return; }
+        continue;
+      }
       if (f.type === "check") out[f.name] = n.checked;
       else if (f.type === "money") {
         const c = parseMoney(n.value, f.neg);

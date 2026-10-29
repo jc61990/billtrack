@@ -32,9 +32,11 @@ class In(BaseModel):
 
 
 def to_row(m: BaseModel) -> dict:
+    import json as _json
     out = {}
     for k, v in m.model_dump().items():
-        out[k] = v.isoformat() if isinstance(v, date) else int(v) if isinstance(v, bool) else v
+        out[k] = (v.isoformat() if isinstance(v, date) else int(v) if isinstance(v, bool)
+                  else _json.dumps(v) if isinstance(v, (list, dict)) else v)
     return out
 
 

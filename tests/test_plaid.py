@@ -232,3 +232,80 @@ def test_positions_from_bank(user, fake):
     assert r["positions_error"] == "ADDITIONAL_CONSENT_REQUIRED" and "error" not in r
     assert "Reconnect" in user.get("/api/plaid/status").json()["items"][0]["positions_status"]
     assert user.post("/api/plaid/link-token", json={"item": st["items"][0]["id"], "add_investments": True}, headers=H).status_code == 200
+
+
+def test_split_paychecks_follow_the_bank(user, fake):
+    t = ledger.today()
+    fake.accounts.append({"account_id": "acc-sav", "name": "360 Savings", "mask": "2222", "type": "depository",
+                          "subtype": "savings", "balances": {"current": 9000.00, "available": 9000.00, "limit": None}})
+    with db.tx() as con:
+        con.execute("DELETE FROM bill_suggestions"); con.execute("DELETE FROM notifications")
+    user.post("/api/plaid/exchange", json={"public_token": "public-sandbox-xyz", "institution_name": "Capital One",
+                                           "import_since": (t - timedelta(days=60)).isoformat()}, headers=H)
+    st = user.get("/api/plaid/status").json()
+    for a in st["items"][0]["accounts"]:
+        if a["name"] in ("360 Checking", "360 Savings"):
+            user.put(f"/api/plaid/accounts/{a['id']}", json={"map_kind": "account", "create": True}, headers=H)
+    acc = {a["name"]: a["id"] for a in user.get("/api/accounts").json()}
+    chk, sav = acc["360 Checking"], acc["360 Savings"]
+    first = t - timedelta(days=14)
+    # $1500 a week: $300 to savings, the rest to checking; follows the bank
+    src = user.post("/api/income-sources", json={"name": "Acme", "amount_cents": 150000, "account_id": chk, "start_date": first.isoformat(),
+                                                 "recurrence": "weekly", "splits": [{"account_id": sav, "amount_cents": 30000}],
+                                                 "amount_mode": "varies", "match_name": "acme payroll"}, headers=H).json()
+    assert user.post("/api/income-sources", json={"name": "Bad", "amount_cents": 1, "account_id": chk, "start_date": first.isoformat(),
+                                                  "splits": [{"account_id": 999999, "amount_cents": 5}]}, headers=H).status_code == 422
+    # expected split shows up per account before anything arrives
+    wk = user.get(f"/api/week?day={t.isoformat()}").json()
+    by = {x["account"]: x["in_cents"] for x in wk["by_account"]}
+    assert by.get("360 Savings") == 30000 and by.get("360 Checking") == 120000
+    # payday 1: deposits as planned; payday 2: I changed my direct deposit ($450 to savings, total $1550)
+    d1, d2 = first, first + timedelta(days=7)
+    fake.pages = [{"added": [txn("p1c", "acc-chk", 0, -1200.00, "ACME PAYROLL", "INCOME", base=d1),
+                             txn("p1s", "acc-sav", 0, -300.00, "ACME PAYROLL", "INCOME", base=d1),
+                             txn("p2c", "acc-chk", 0, -1100.00, "ACME PAYROLL DIR DEP", "INCOME", base=d2),
+                             txn("p2s", "acc-sav", 0, -450.00, "ACME PAYROLL DIR DEP", "INCOME", base=d2)],
+                   "modified": [], "removed": [], "next_cursor": "c1", "has_more": False}]
+    user.post("/api/plaid/sync", headers=H)
+    pays = {p["orig_date"]: p for p in user.get(f"/api/week?day={d2.isoformat()}").json()["pay"]}
+    assert pays[d2.isoformat()]["received"] and pays[d2.isoformat()]["amount_cents"] == 155000      # both parts add up
+    assert sorted(x["amount_cents"] for x in pays[d2.isoformat()]["parts"]) == [45000, 110000]
+    s2 = [s for s in user.get("/api/income-sources").json() if s["id"] == src["id"]][0]
+    import json as _j
+    assert s2["amount_cents"] == 155000 and _j.loads(s2["splits"]) == [{"account_id": sav, "amount_cents": 45000}]
+    assert s2["account_id"] == chk
+    assert any("Acme updated from your bank" in n["title"] for n in user.get("/api/me/notifications").json())
+    # bank reverses the savings part of payday 2: the payday keeps the checking part
+    fake.pages = [{"added": [], "modified": [], "removed": [{"transaction_id": "p2s"}], "next_cursor": "c2", "has_more": False}]
+    user.post("/api/plaid/sync", headers=H)
+    pays = {p["orig_date"]: p for p in user.get(f"/api/week?day={d2.isoformat()}").json()["pay"]}
+    assert pays[d2.isoformat()]["amount_cents"] == 110000
+    # a 'fixed' paycheck only gets a suggestion
+    user.put(f"/api/income-sources/{src['id']}", json={**{k: s2[k] for k in ("name", "account_id", "start_date", "recurrence")},
+                                                       "amount_cents": 150000, "splits": [], "amount_mode": "fixed",
+                                                       "match_name": "acme payroll"}, headers=H)
+    fake.pages = [{"added": [txn("p2s2", "acc-sav", 0, -450.00, "ACME PAYROLL DIR DEP", "INCOME", base=d2)],
+                   "modified": [], "removed": [], "next_cursor": "c3", "has_more": False}]
+    user.post("/api/plaid/sync", headers=H)
+    sg = [x for x in user.get("/api/bills/suggestions").json() if x["kind"] == "pay"]
+    assert sg and sg[0]["payload"]["to"] == 155000
+    assert [s for s in user.get("/api/income-sources").json() if s["id"] == src["id"]][0]["amount_cents"] == 150000
+    user.post(f"/api/bills/suggestions/{sg[0]['id']}/accept", headers=H)
+    assert [s for s in user.get("/api/income-sources").json() if s["id"] == src["id"]][0]["amount_cents"] == 155000
+
+
+def test_refresh_when_opening_app(user, fake):
+    user.post("/api/plaid/exchange", json={"public_token": "public-sandbox-xyz", "institution_name": "Capital One"}, headers=H)
+    with db.tx() as con:
+        con.execute("UPDATE plaid_items SET last_sync='2020-01-01T00:00:00+00:00'")
+    assert user.post("/api/plaid/refresh-if-stale", headers=H).json()["started"] is True
+    import time as _t
+    for _ in range(50):
+        _t.sleep(0.1)
+        if user.get("/api/plaid/status").json()["items"][0]["last_sync"] > "2021":
+            break
+    assert user.get("/api/plaid/status").json()["items"][0]["last_sync"] > "2021"     # synced in the background
+    assert user.post("/api/plaid/refresh-if-stale", headers=H).json()["started"] is False   # fresh now
+    linked = {a["name"]: a["linked"] for a in user.get("/api/accounts/overview").json()["banks"]} \
+        if "banks" in user.get("/api/accounts/overview").json() else {}
+    assert linked == {} or all(v in (0, 1, True, False) for v in linked.values())

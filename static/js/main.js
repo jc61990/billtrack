@@ -156,6 +156,10 @@ async function boot() {
   S.view = VIEWS.some((v) => v[0] === legacy) ? legacy : (S.me.mfa_setup_required ? "settings" : isAdmin ? "admin-overview" : "home");
   go(S.view);
   if (isAdmin && !S.me.mfa_setup_required) admin.maybeAutoTour();
+  // Linked banks: catch up in the background when the app opens (if the last sync is over 30 minutes old)
+  if (can("finance:write") && !S.me.mfa_setup_required) {
+    api("POST", "/api/plaid/refresh-if-stale").then((r) => { if (r.started) setTimeout(() => refresh(), 20000); }).catch(() => {});
+  }
 }
 
 setUnauthorizedHandler(() => { S.me = null; showAuth(boot); });

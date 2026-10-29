@@ -48,7 +48,7 @@ DEFAULTS = {
     "plaid_env": os.getenv("BT_PLAID_ENV", "production"),
     "plaid_client_id": os.getenv("BT_PLAID_CLIENT_ID", ""),
     "plaid_secret": os.getenv("BT_PLAID_SECRET", ""),
-    "plaid_sync_hours": int(os.getenv("BT_PLAID_SYNC_HOURS", "6") or 6),
+    "plaid_sync_hours": int(os.getenv("BT_PLAID_SYNC_HOURS", "2") or 2),
     "require_2fa": _bool("BT_REQUIRE_2FA", False),
     "registration_mode": os.getenv("BT_REGISTRATION", "approval"),   # approval | invite_only | closed
     "session_minutes": _int("BT_SESSION_MINUTES", 15),   # hard limit: sign in again after this

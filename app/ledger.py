@@ -83,6 +83,12 @@ def pay_occurrences(con, lo: date, hi: date, include_skipped=False):
     rec = {(r["source_id"], r["pay_date"]): r for r in rows(
         con, "SELECT * FROM income_received WHERE pay_date BETWEEN ? AND ? AND owner_id=?",
         ((lo - PAD).isoformat(), (hi + PAD).isoformat(), owner()))}
+    names = {a["id"]: a["name"] for a in rows(con, "SELECT id, name FROM accounts WHERE owner_id=?", (owner(),))}
+    deps: dict = {}
+    for r_ in rows(con, "SELECT source_id, pay_date, account_id, sum(amount_cents) amount_cents FROM income_deposits "
+                        "WHERE owner_id=? AND pay_date BETWEEN ? AND ? GROUP BY source_id, pay_date, account_id",
+                   (owner(), (lo - PAD).isoformat(), (hi + PAD).isoformat())):
+        deps.setdefault((r_["source_id"], r_["pay_date"]), []).append(r_)
     out = []
     for s in srcs:
         for d, orig, o in _expand(s, ov, "pay", lo, hi):
@@ -98,7 +104,29 @@ def pay_occurrences(con, lo: date, hi: date, include_skipped=False):
                 "received": bool(r), "received_id": r["id"] if r else None,
                 "received_source": r.get("source") if r else None,
                 "account_id": s["account_id"], "account": s["account"]})
+            p = out[-1]
+            actual = deps.get((s["id"], orig.isoformat())) if r else None
+            p["parts"] = ([{"account_id": x["account_id"], "account": names.get(x["account_id"]), "amount_cents": x["amount_cents"]}
+                           for x in actual] if actual else split_amount(s, p["amount_cents"], names))
     return sorted(out, key=lambda x: x["date"])
+
+
+def split_amount(src, total: int, names: dict) -> list:
+    """How a paycheck lands in accounts: fixed split amounts first, the rest to the main account."""
+    import json as _json
+    try:
+        splits = _json.loads(src.get("splits") or "[]")
+    except ValueError:
+        splits = []
+    parts, left = [], total
+    for sp in splits:
+        amt = max(0, min(int(sp.get("amount_cents") or 0), left))
+        if amt and sp.get("account_id"):
+            parts.append({"account_id": sp["account_id"], "account": names.get(sp["account_id"]), "amount_cents": amt})
+            left -= amt
+    if left or not parts:
+        parts.append({"account_id": src["account_id"], "account": names.get(src["account_id"]), "amount_cents": left})
+    return parts
 
 
 def extras(con, lo: date, hi: date):
@@ -127,7 +155,10 @@ def summarize(con, lo: date, hi: date, detail=True, include_skipped=False):
     by_acct: dict = {}
     def acct(name):
         return by_acct.setdefault(name or "Unassigned", {"in_cents": 0, "out_cents": 0})
-    for x in pays + ext:
+    for x in pays:
+        for part in x.get("parts") or [x]:
+            acct(part["account"])["in_cents"] += part["amount_cents"]
+    for x in ext:
         acct(x["account"])["in_cents"] += x["amount_cents"]
     for x in bills + exp:
         acct(x["account"])["out_cents"] += x["amount_cents"]
@@ -306,15 +337,19 @@ def accounts_view(con):
     t = today()
     ws = week_start_of(t)
     we = ws + timedelta(days=6)
-    accts = rows(con, "SELECT * FROM accounts WHERE owner_id=? ORDER BY name COLLATE NOCASE", (owner(),))
+    accts = rows(con, "SELECT a.*, EXISTS(SELECT 1 FROM plaid_accounts pa WHERE pa.map_kind='account' AND pa.map_id=a.id "
+                      "AND pa.owner_id=a.owner_id) AS linked FROM accounts a WHERE a.owner_id=? ORDER BY a.name COLLATE NOCASE",
+                 (owner(),))
     # money still expected to move through each account between today and the end of this pay week
     pending: dict = defaultdict(int)
     for b in bill_occurrences(con, t, we):
         if b["status"] in ("overdue", "due-soon", "upcoming", "autopay") and b["account_id"]:
             pending[b["account_id"]] -= b["amount_cents"]
     for p in pay_occurrences(con, t, we):
-        if not p["received"] and p["account_id"]:
-            pending[p["account_id"]] += p["amount_cents"]
+        if not p["received"]:
+            for part in p["parts"]:
+                if part["account_id"]:
+                    pending[part["account_id"]] += part["amount_cents"]
     hist: dict = defaultdict(list)
     for h in rows(con, "SELECT account_id, date, balance_cents FROM account_history WHERE date >= ? AND owner_id=? ORDER BY date",
                   ((t - timedelta(days=90)).isoformat(), owner())):

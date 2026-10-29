@@ -254,16 +254,29 @@ def _match_bill(con, account_id, d: date, amount: int, payee: str = ""):
     return best[1] if best else None
 
 
-def _match_pay(con, account_id, d: date, amount: int):
-    """An un-received payday into this account within ±PAY_DAYS; take-home may vary (OT), so allow -40%/+75%."""
+def _match_pay(con, account_id, d: date, amount: int, payee: str = ""):
+    """The payday this deposit belongs to, within ±PAY_DAYS. A whole paycheck matches on amount (-40%/+75%, OT varies).
+    A split deposit (part of a paycheck going to another account) matches on the employer name, also after the first
+    part has already been recorded for that payday."""
+    from .autopilot import name_matches
     best = None
+    srcs = {s_["id"]: s_ for s_ in rows(con, "SELECT id, name, match_name, account_id, splits FROM income_sources WHERE owner_id=?",
+                                        (owner(),))}
     for p in ledger.pay_occurrences(con, d - timedelta(days=PAY_DAYS), d + timedelta(days=PAY_DAYS)):
-        if p["received"] or p["skipped"] or p["account_id"] not in (None, account_id):
+        if p["skipped"]:
             continue
-        if p["expected_cents"] * 0.6 <= amount <= p["expected_cents"] * 1.75:
-            dist = abs((date.fromisoformat(p["date"]) - d).days)
-            if best is None or dist < best[0]:
-                best = (dist, p)
+        src = srcs.get(p["source_id"], {})
+        accounts = {src.get("account_id")} | {sp.get("account_id") for sp in json.loads(src.get("splits") or "[]")}
+        name_ok = bool(payee) and name_matches({"name": src.get("name"), "match_name": src.get("match_name")}, payee)
+        if p["received"] and not (name_ok and p["received_source"] == "bank"):
+            continue
+        amount_ok = p["expected_cents"] * 0.6 <= amount <= p["expected_cents"] * 1.75
+        if not (amount_ok and (src.get("account_id") in (None, account_id) or account_id in accounts)) and \
+                not (name_ok and amount <= p["expected_cents"] * 1.75):
+            continue
+        dist = abs((date.fromisoformat(p["date"]) - d).days) - (2 if name_ok else 0) + (1 if p["received"] else 0)
+        if best is None or dist < best[0]:
+            best = (dist, p)
     return best[1] if best else None
 
 
@@ -294,11 +307,20 @@ def _apply_txn(con, t, pa, since: str) -> str:
                                   "VALUES (?,?,?,?,?,'bank',?)", (d.isoformat(), name, amt, acct_id, _pretty(primary), owner()))
                 exp_id, out = cur.lastrowid, "expense"
         elif amt < 0 and primary == "INCOME":
-            p = _match_pay(con, acct_id, d, -amt)
+            p = _match_pay(con, acct_id, d, -amt, name)
             if p:
-                cur = con.execute("""INSERT INTO income_received(source_id,pay_date,amount_cents,source,owner_id) VALUES (?,?,?,'bank',?)
-                                     ON CONFLICT(source_id,pay_date) DO NOTHING""", (p["source_id"], p["orig_date"], -amt, owner()))
-                rec_id, out = cur.lastrowid if cur.rowcount else None, f"pay:{p['name']}"
+                # several deposits from one paycheck (split across accounts) add up into one received payday
+                ex = con.execute("SELECT id FROM income_received WHERE source_id=? AND pay_date=? AND owner_id=?",
+                                 (p["source_id"], p["orig_date"], owner())).fetchone()
+                if ex:
+                    con.execute("UPDATE income_received SET amount_cents=amount_cents+? WHERE id=?", (-amt, ex["id"]))
+                    rec_id = None   # the payday was created by another deposit; undoing this one subtracts below
+                else:
+                    rec_id = con.execute("INSERT INTO income_received(source_id,pay_date,amount_cents,source,owner_id) "
+                                         "VALUES (?,?,?,'bank',?)", (p["source_id"], p["orig_date"], -amt, owner())).lastrowid
+                con.execute("INSERT OR IGNORE INTO income_deposits(owner_id,source_id,pay_date,account_id,amount_cents,transaction_id) "
+                            "VALUES (?,?,?,?,?,?)", (owner(), p["source_id"], p["orig_date"], acct_id, -amt, tid))
+                out = f"pay:{p['name']}"
         elif primary in SKIP_OUT or detailed in SKIP_DETAILED:
             out = "transfer"
     con.execute("""INSERT INTO plaid_txns(transaction_id,plaid_account_id,date,name,amount_cents,category,outcome,
@@ -315,7 +337,18 @@ def _undo_txn(con, tid):
         con.execute("DELETE FROM expenses WHERE id=? AND source='bank' AND owner_id=?", (r["expense_id"], owner()))
     if r["payment_id"]:
         con.execute("DELETE FROM payments WHERE id=? AND source='bank' AND owner_id=?", (r["payment_id"], owner()))
-    if r["received_id"]:
+    dep = con.execute("SELECT * FROM income_deposits WHERE transaction_id=? AND owner_id=?", (tid, owner())).fetchone()
+    if dep:   # part (or all) of a paycheck: the payday keeps whatever the other deposits still add up to
+        con.execute("DELETE FROM income_deposits WHERE id=?", (dep["id"],))
+        left = con.execute("SELECT coalesce(sum(amount_cents),0) FROM income_deposits WHERE source_id=? AND pay_date=? AND owner_id=?",
+                           (dep["source_id"], dep["pay_date"], owner())).fetchone()[0]
+        if left:
+            con.execute("UPDATE income_received SET amount_cents=? WHERE source_id=? AND pay_date=? AND owner_id=?",
+                        (left, dep["source_id"], dep["pay_date"], owner()))
+        else:
+            con.execute("DELETE FROM income_received WHERE source_id=? AND pay_date=? AND source='bank' AND owner_id=?",
+                        (dep["source_id"], dep["pay_date"], owner()))
+    elif r["received_id"]:
         con.execute("DELETE FROM income_received WHERE id=? AND source='bank' AND owner_id=?", (r["received_id"], owner()))
     con.execute("DELETE FROM plaid_txns WHERE transaction_id=? AND owner_id=?", (tid, owner()))
 
@@ -365,6 +398,7 @@ def sync_item(local_id: int) -> dict:
             ledger.snapshot_networth(con)
             from . import autopilot, notify
             stats["suggestions"] = autopilot.scan_recurring(con)
+            autopilot.learn_income(con)
             notify.account_alerts(con)
         stats.update(sync_positions(local_id))
     except PlaidError as e:

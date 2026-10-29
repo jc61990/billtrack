@@ -125,6 +125,10 @@ CREATE TABLE IF NOT EXISTS plaid_txns (
   date TEXT NOT NULL, name TEXT NOT NULL, amount_cents INTEGER NOT NULL, category TEXT NOT NULL DEFAULT '',
   outcome TEXT NOT NULL DEFAULT '', expense_id INTEGER, payment_id INTEGER, received_id INTEGER, seen_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS income_deposits (
+  id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL, source_id INTEGER NOT NULL REFERENCES income_sources(id) ON DELETE CASCADE,
+  pay_date TEXT NOT NULL, account_id INTEGER, amount_cents INTEGER NOT NULL, transaction_id TEXT UNIQUE);
+CREATE INDEX IF NOT EXISTS ix_income_deposits ON income_deposits(owner_id, source_id, pay_date);
 CREATE TABLE IF NOT EXISTS bill_suggestions (
   id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL, kind TEXT NOT NULL, bill_id INTEGER, key TEXT NOT NULL,
   payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', created_at TEXT NOT NULL, UNIQUE(owner_id, key));
@@ -191,6 +195,10 @@ ADD_COLUMNS = [
     ("holdings", "source", "TEXT NOT NULL DEFAULT 'manual'"),
     ("holdings", "plaid_security_id", "TEXT"),
     ("plaid_items", "positions_status", "TEXT NOT NULL DEFAULT ''"),
+    # v3.8 dynamic income
+    ("income_sources", "splits", "TEXT NOT NULL DEFAULT '[]'"),
+    ("income_sources", "amount_mode", "TEXT NOT NULL DEFAULT 'fixed'"),
+    ("income_sources", "match_name", "TEXT NOT NULL DEFAULT ''"),
 ] + [(t, "owner_id", "INTEGER") for t in (
     "accounts", "bills", "payments", "income_sources", "income_received", "income_extra", "expenses",
     "occurrence_overrides", "trackers", "tracker_entries", "inv_accounts", "holdings", "inv_snapshots",
@@ -222,6 +230,9 @@ def migrate(con) -> None:
         if not con.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
             con.execute("UPDATE users SET role='admin' WHERE id=(SELECT min(id) FROM users)")
     _migrate_v3(con)
+    if not con.execute("SELECT 1 FROM meta WHERE key='v38_sync'").fetchone():   # 3.8: bank sync every 2 h, not 6
+        con.execute("UPDATE settings SET value='2' WHERE key='plaid_sync_hours' AND value='6'")
+        con.execute("INSERT INTO meta(key,value) VALUES ('v38_sync','1')")
     con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 

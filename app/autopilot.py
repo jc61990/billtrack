@@ -144,4 +144,45 @@ def apply(con, s: dict):
                     "category,owner_id) VALUES (?,?,?,?,?,1,?,?,'',?)",
                     (p["name"][:100], p["amount_cents"], acct, p["start_date"], p["recurrence"], p["amount_mode"],
                      p["match_name"][:60], owner()))
+    elif s["kind"] == "pay":
+        con.execute("UPDATE income_sources SET amount_cents=?, account_id=?, splits=? WHERE id=? AND owner_id=?",
+                    (p["to"], p["account_id"], json.dumps(p["splits"]), s["bill_id"], owner()))
     con.execute("UPDATE bill_suggestions SET status='accepted' WHERE id=?", (s["id"],))
+
+
+
+def learn_income(con):
+    """After deposits arrive: for 'varies' paychecks, update the expected amount and the per-account split to match the
+    latest bank-recorded payday (with a note). For 'fixed' ones, suggest it when the total or the split changed."""
+    for src in rows(con, "SELECT * FROM income_sources WHERE owner_id=? AND active=1", (owner(),)):
+        last = con.execute("SELECT pay_date FROM income_deposits WHERE owner_id=? AND source_id=? ORDER BY pay_date DESC LIMIT 1",
+                           (owner(), src["id"])).fetchone()
+        if not last:
+            continue
+        parts = rows(con, "SELECT account_id, sum(amount_cents) amount_cents FROM income_deposits WHERE owner_id=? AND source_id=? "
+                          "AND pay_date=? GROUP BY account_id ORDER BY amount_cents", (owner(), src["id"], last["pay_date"]))
+        total = sum(x["amount_cents"] for x in parts)
+        main = max(parts, key=lambda x: x["amount_cents"])["account_id"]       # biggest share = main account (the rest)
+        splits = [{"account_id": x["account_id"], "amount_cents": x["amount_cents"]} for x in parts if x["account_id"] != main]
+        try:
+            cur = json.loads(src["splits"] or "[]")
+        except ValueError:
+            cur = []
+        same_split = sorted((x["account_id"], x["amount_cents"]) for x in splits) == \
+            sorted((x.get("account_id"), x.get("amount_cents")) for x in cur) and main == src["account_id"]
+        if abs(total - src["amount_cents"]) <= 50 and same_split:
+            continue
+        names = {a["id"]: a["name"] for a in rows(con, "SELECT id, name FROM accounts WHERE owner_id=?", (owner(),))}
+        desc = ", ".join(f"${x['amount_cents'] / 100:,.2f} to {names.get(x['account_id'], 'an account')}" for x in splits)
+        desc = (desc + f", the rest to {names.get(main, 'the main account')}") if desc else f"all to {names.get(main, 'one account')}"
+        if src["amount_mode"] == "varies":
+            con.execute("UPDATE income_sources SET amount_cents=?, account_id=?, splits=? WHERE id=?",
+                        (total, main, json.dumps(splits), src["id"]))
+            _note(con, f"{src['name']} updated from your bank: ${total / 100:,.2f}",
+                  f"Latest paycheck on {last['pay_date']}: {desc}. Future weeks use this.")
+        else:
+            _suggest(con, "pay", f"pay:{src['id']}:{last['pay_date']}",
+                     {"name": src["name"], "from": src["amount_cents"], "to": total, "account_id": main, "splits": splits,
+                      "desc": desc}, None)
+            con.execute("UPDATE bill_suggestions SET bill_id=? WHERE owner_id=? AND key=?",
+                        (src["id"], owner(), f"pay:{src['id']}:{last['pay_date']}"))

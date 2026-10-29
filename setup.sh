@@ -160,6 +160,7 @@ else
   echo "    Keeping existing $ENV_FILE"
   # 3.5.1: the old default (300 requests/min) was too low for fast clicking; raise it unless you chose your own
   sed -i 's/^BT_RATE_LIMIT_PER_MIN=300$/BT_RATE_LIMIT_PER_MIN=1200/' "$ENV_FILE"
+  sed -i 's/^BT_PLAID_SYNC_HOURS=6$/BT_PLAID_SYNC_HOURS=2/' "$ENV_FILE"     # 3.8: bank sync every 2 hours
 fi
 
 echo "==> Database encryption key"

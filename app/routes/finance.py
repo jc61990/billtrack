@@ -57,10 +57,18 @@ def _end_after_start(m):
     return m
 
 
+class SplitIn(In):
+    account_id: int
+    amount_cents: Annotated[int, Field(ge=1, le=10**9)]
+
+
 class SourceIn(In):
     name: Name
     amount_cents: Cents
-    account_id: int | None = None
+    account_id: int | None = None                      # main account: gets whatever isn't split off
+    splits: Annotated[list[SplitIn], Field(max_length=6)] = []   # fixed amounts to other accounts each payday
+    amount_mode: Literal["fixed", "varies"] = "fixed"  # varies: follow the bank deposits (total and split)
+    match_name: Short = ""                             # employer name as it shows on deposits
     start_date: date
     recurrence: Rec = "weekly"
     end_date: date | None = None
@@ -216,7 +224,16 @@ def accounts_overview(p: Principal = Depends(require(R))):
     with db.tx() as con:
         return ledger.accounts_view(con)
 crud(r, "bills", "bills", BillIn, R, W)
-crud(r, "income-sources", "income_sources", SourceIn, R, W)
+def _check_splits(con, row, item_id):
+    import json as _j
+    for sp in _j.loads(row.get("splits") or "[]"):
+        if not con.execute("SELECT 1 FROM accounts WHERE id=? AND owner_id=?", (sp["account_id"], owner())).fetchone():
+            raise HTTPException(422, "A split account doesn't exist")
+        if sp["account_id"] == row.get("account_id"):
+            raise HTTPException(422, "A split can't go to the main account (it already gets the rest)")
+
+
+crud(r, "income-sources", "income_sources", SourceIn, R, W, before_save=_check_splits)
 crud(r, "income-extra", "income_extra", ExtraIn, R, W, order="date DESC", date_col="date", before_save=_ot_amount)
 crud(r, "expenses", "expenses", ExpenseIn, R, W, order="date DESC", date_col="date")
 

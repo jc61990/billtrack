@@ -48,7 +48,9 @@ function bankCard(a, weekEnd) {
       spark(a.history)),
     el("div", { class: "spread big" }, el("strong", { class: a.balance_cents < 0 ? "out" : "" }, money(a.balance_cents)),
       a.low ? el("span", { class: "tag overdue" }, "Below alert") : null),
-    el("div", { class: "meta" }, `Updated ${a.balance_updated ? fmtTs(a.balance_updated) : "never"}`),
+    el("div", { class: "meta" }, a.linked ? `🏦 From your bank · updated ${a.balance_updated ? fmtTs(a.balance_updated) : "never"}`
+      : el("span", {}, `Updated ${a.balance_updated ? fmtTs(a.balance_updated) : "never"} by hand · `,
+        el("a", { href: "#banks" }, "link this bank to update it automatically"))),
     a.pending_cents ? el("p", { class: a.projected_low ? "out" : "muted" },
       `${a.projected_low ? "⚠ " : ""}About ${money(a.projected_cents)} by ${fmtDay(weekEnd, { weekday: "short", month: "short", day: "numeric" })} after `
       + `scheduled bills and pay (${a.pending_cents < 0 ? "−" : "+"}${money(Math.abs(a.pending_cents))})`) : null,
@@ -74,7 +76,8 @@ function creditCard(c) {
       c.next_due ? `Due ${fmtDay(c.next_due, { month: "short", day: "numeric" })}${c.days_to_due === 0 ? " (today)" : ` (${c.days_to_due}d)`}` : null,
       c.min_payment_cents ? `min ${money(c.min_payment_cents)}` : null,
       c.upcoming_charges_cents ? `${money(c.upcoming_charges_cents)} in bills charged this week` : null,
-      `updated ${c.balance_updated ? fmtTs(c.balance_updated) : "never"}`].filter(Boolean).join(" · ")),
+      c.linked ? `🏦 from your bank, updated ${c.balance_updated ? fmtTs(c.balance_updated) : "never"}`
+        : `updated ${c.balance_updated ? fmtTs(c.balance_updated) : "never"} by hand`].filter(Boolean).join(" · ")),
     c.next_due && c.days_to_due <= 3 && c.balance_cents > 0 ? el("p", { class: "out" }, "⚠ Payment due soon") : null,
     w ? el("div", { class: "actions left" }, el("button", { type: "button", class: "primary", onclick: () => balanceForm(c) }, "Update balance"),
       el("button", { type: "button", onclick: () => cardForm(c) }, "Edit")) : null);
