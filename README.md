@@ -4,7 +4,7 @@ Self-hosted bill, paycheck, savings and investment tracker built around the **we
 roles, two-factor sign-in, alerts by email and phone push, and encryption at every layer: the database on disk,
 secrets inside it, and every byte of browser traffic.
 
-![version](https://img.shields.io/badge/version-3.7.0-blue)
+![version](https://img.shields.io/badge/version-3.7.1-blue)
 
 ## Features
 
@@ -183,6 +183,18 @@ Back / Next. Rerun it from Admin → Overview, which also shows a setup checklis
 `setup.sh` then asks you to create a separate **admin** account. Other existing accounts become users with their
 own (empty) data. Bank links move from the admin portal to each user's **Bank links** page; the calendar
 subscription becomes a private link per user (Settings → Calendar app).
+
+## GitHub checks (CI) and the "Run failed" emails
+Every push, and every Monday, GitHub runs three separate checks, and the email names the one that failed:
+
+| Check | Fails when | What to do |
+|---|---|---|
+| **tests** | A real bug or broken test | Send the red lines from *View workflow run* |
+| **security-audit** | A vulnerability was just published for a pinned dependency (your code didn't change). The Monday run catches these between pushes. | Bump that package in `requirements.txt` to the *Fix Versions* shown in the run summary, or merge Dependabot's pull request |
+| **frontend-lint** | A mistake in browser code (e.g. an undefined name) | Send the red lines |
+
+Turn on **Settings → Code security → Dependabot security updates** in the GitHub repo so vulnerable pins get an
+automatic pull request.
 
 ## Admin CLI
 `setup.sh` installs `billtrack-manage` (Docker: `docker compose exec billtrack python -m app.manage ...`).

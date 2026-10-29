@@ -2,20 +2,43 @@ name: ci
 on:
   push:
   pull_request:
-  schedule: [{ cron: "0 12 * * 1" }]   # weekly CVE re-scan even with no commits
+  schedule: [{ cron: "0 12 * * 1" }]   # Mondays: re-check dependencies for newly published vulnerabilities
 permissions:
   contents: read
 jobs:
-  test-and-audit:
+  # 1) Does the code work? (fails = a real bug or a broken test)
+  tests:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install -r requirements.txt pytest httpx pip-audit
-      - run: python -m pytest -q
-      - run: pip-audit -r requirements.txt --strict
+      - run: pip install -r requirements.txt pytest httpx
+      - run: python -m pytest -q -rf
 
+  # 2) Is any pinned dependency known to be vulnerable? (fails = a new CVE was published; bump the pin)
+  security-audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install pip-audit
+      - name: pip-audit
+        run: |
+          if ! pip-audit -r requirements.txt --strict --desc on > audit.txt 2>&1; then
+            cat audit.txt
+            {
+              echo "## A dependency has a newly published vulnerability"
+              echo "BillTrack's code didn't change; a CVE was published for a pinned package."
+              echo "Fix: update that package in requirements.txt to the 'Fix Versions' shown below (or merge Dependabot's PR)."
+              echo '```'; cat audit.txt; echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          cat audit.txt
+
+  # 3) Browser code: undefined names and other mistakes (fails = a bug that would break a page)
   frontend-lint:
     runs-on: ubuntu-24.04
     steps:
@@ -23,4 +46,4 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: "22" }
       - run: npm i --no-save eslint@9 globals@15
-      - run: npx eslint static/js static/sw.js    # fails on undefined names (the 3.5.1 Admin > Users bug)
+      - run: npx eslint --max-warnings 0 static/js static/sw.js

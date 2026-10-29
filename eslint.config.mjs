@@ -6,7 +6,7 @@ export default [
   {
     files: ["static/js/**/*.js"],
     languageOptions: { ecmaVersion: 2023, sourceType: "module", globals: { ...globals.browser } },
-    rules: { "no-undef": "error", "no-unused-vars": ["warn", { args: "none" }], "no-dupe-keys": "error",
+    rules: { "no-undef": "error", "no-unused-vars": ["warn", { args: "none", ignoreRestSiblings: true, varsIgnorePattern: "^_" }], "no-dupe-keys": "error",
              "no-unreachable": "error", "no-redeclare": "error", "no-import-assign": "error" },
   },
   { files: ["static/sw.js"], languageOptions: { globals: { ...globals.serviceworker } }, rules: { "no-undef": "error" } },

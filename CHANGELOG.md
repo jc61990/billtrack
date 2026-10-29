@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.7.1 - 2026-10-23
+### Changed
+- CI split into three clearly named jobs: **tests**, **security-audit** and **frontend-lint**, so a "Run failed"
+  email says what kind of failure it is. A failing security audit writes a run summary explaining that a CVE was
+  published for a pinned package and which version fixes it.
+- Frontend lint now fails on warnings too (`--max-warnings 0`); the 6 remaining warnings (intentional
+  "omit these fields" destructuring) are allowed by rule instead.
+### Verified
+- The test suite passes at awkward dates (month end, year end, New Year, Feb 28, leap day, the daylight-saving
+  change, Jan 31, Nov 30 late night), as a non-root user, and `pip-audit --strict` is clean.
+
 ## 3.7.0 - 2026-10-17
 ### Added
 - **2FA setup shows a QR code** (rendered server-side as an SVG `data:` image with `segno` 1.6.6, pure Python, no known
